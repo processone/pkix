@@ -428,11 +428,11 @@ der_decode({_, _, _}) ->
 %%% Certificate chains processing
 %%%===================================================================
 -spec commit(state(), dirname(), filename(), false | soft | hard) ->
-	     {ok, [{filename(), bad_cert_error() | invalid_cert_error() | io_error()}],
-	          {filename(), undefined | bad_cert_error() | io_error()}} |
+	     {ok, [{filename(), bad_cert_error() | invalid_cert_error()}],
+	          {filename(), undefined | bad_cert_error()}} |
 	     {error, filename() | dirname(), io_error()}.
 commit(State, Dir, CAFile, ValidateHow) ->
-    {Chains, MissingKeyCerts} = build_chains(State),
+    {Chains, BadCertsWithReason} = build_chains(State),
     {CAError, InvalidCertsWithReason} = validate(Chains, CAFile, ValidateHow),
     InvalidCerts = [C || {C, _} <- InvalidCertsWithReason],
     SortedChains = case ValidateHow of
@@ -444,43 +444,37 @@ commit(State, Dir, CAFile, ValidateHow) ->
 		   end,
     case store_chains(SortedChains, Dir, State) of
 	ok ->
-	    Missing = lists:map(
-			fun(Cert) ->
-				#pem{file = File, line = Line} =
-				    maps:get(Cert, State#state.certs),
-				{File, {bad_cert, Line, missing_priv_key}}
-			end, MissingKeyCerts),
-	    Invalid = lists:map(
-			fun({Cert, Reason}) ->
-				#pem{file = File, line = Line} =
-				    maps:get(Cert, State#state.certs),
-				{File, {invalid_cert, Line, Reason}}
-			end, InvalidCertsWithReason),
-	    {ok, Missing ++ Invalid, CAError};
+	    Bad = map_errors(State, bad_cert, BadCertsWithReason),
+	    Invalid = map_errors(State, invalid_cert, InvalidCertsWithReason),
+	    {ok, Bad ++ Invalid, CAError};
 	{error, _, _} = Err ->
 	    Err
     end.
 
--spec build_chains(state()) -> {[cert_chain()], [cert()]}.
+-spec build_chains(state()) -> {[cert_chain()], [{cert(), bad_cert_reason()}]}.
 build_chains(State) ->
     CertPaths = get_cert_paths(maps:keys(State#state.certs)),
     match_cert_keys(CertPaths, maps:keys(State#state.keys)).
 
--spec match_cert_keys([cert_path()], [priv_key()]) -> {[cert_chain()], [cert()]}.
+-spec match_cert_keys([cert_path()], [priv_key()]) ->
+		      {[cert_chain()], [{cert(), bad_cert_reason()}]}.
 match_cert_keys(CertPaths, PrivKeys) ->
     KeyPairs = [{pubkey_from_privkey(PrivKey), PrivKey} || PrivKey <- PrivKeys],
     match_cert_keys(CertPaths, KeyPairs, [], []).
 
 -spec match_cert_keys([cert_path()], [{pub_key(), priv_key()}],
-		      [cert_chain()], [cert()]) -> {[cert_chain()], [cert()]}.
+		      [cert_chain()], [{cert(), bad_cert_reason()}]) ->
+			     {[cert_chain()], [{cert(), bad_cert_reason()}]}.
 match_cert_keys([{path, Certs}|CertPaths], KeyPairs, Chains, BadCerts) ->
     [Cert|_] = RevCerts = lists:reverse(Certs),
     PubKey = pubkey_from_cert(Cert),
     case lists:keyfind(PubKey, 1, KeyPairs) of
 	false ->
-	    match_cert_keys(CertPaths, KeyPairs, Chains, [Cert|BadCerts]);
+	    match_cert_keys(CertPaths, KeyPairs, Chains,
+			    [{Cert, missing_priv_key}|BadCerts]);
 	{_, PrivKey} ->
-	    match_cert_keys(CertPaths, KeyPairs, [{RevCerts, PrivKey}|Chains], BadCerts)
+	    match_cert_keys(CertPaths, KeyPairs,
+			    [{RevCerts, PrivKey}|Chains], BadCerts)
     end;
 match_cert_keys([], _, Chains, BadCerts) ->
     {Chains, BadCerts}.
@@ -535,6 +529,17 @@ sort_chains(Chains, InvalidCerts) ->
 	      end
       end, Chains).
 
+-spec map_errors(state(), bad_cert | invalid_cert,
+		 [{cert(), bad_cert_reason() | invalid_cert_reason()}]) ->
+			[{filename(), bad_cert_error() | invalid_cert_error()}].
+map_errors(State, Type, CertsWithReason) ->
+    lists:map(
+      fun({Cert, Reason}) ->
+	      #pem{file = File, line = Line} =
+		  maps:get(Cert, State#state.certs),
+	      {File, {Type, Line, Reason}}
+      end, CertsWithReason).
+
 %%%===================================================================
 %%% Certificates storage
 %%%===================================================================
@@ -576,8 +581,8 @@ store_chains([{Certs, _} = Chain|Chains], Dir, State, Doms) ->
     end;
 store_chains([], Dir, _State, Doms) ->
     Old = ets:tab2list(?MODULE),
-    ets:insert(?MODULE, maps:to_list(Doms)),
-    New = ets:tab2list(?MODULE),
+    New = maps:to_list(Doms),
+    ets:insert(?MODULE, New),
     lists:foreach(
       fun(Elem) ->
 	      ets:delete_object(?MODULE, Elem)
@@ -586,8 +591,7 @@ store_chains([], Dir, _State, Doms) ->
     clear_dir(Dir, NewFiles).
 
 -spec store_chain(cert_chain(), dirname(), state()) ->
-			 {ok, filename()} |
-			 {error, filename(), io_error()}.
+			 {ok, filename()} | {error, filename(), io_error()}.
 store_chain({Certs, Key}, Dir, State) ->
     PEM1 = pem_encode(Certs, State#state.certs),
     PEM2 = pem_encode([Key], State#state.keys),
