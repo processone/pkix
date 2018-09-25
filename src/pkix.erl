@@ -103,7 +103,7 @@ is_pem_file(Path) ->
 -spec commit(file:dirname_all()) ->
       {ok, Errors :: [{filename(), bad_cert_error() | invalid_cert_error() | io_error()}],
            Warnings :: [{filename(), bad_cert_error() | invalid_cert_error()}],
-           CAError :: {filename(), undefined | bad_cert_error() | io_error()}} |
+           CAError :: {filename(), bad_cert_error() | io_error()} | undefined} |
       {error, filename() | dirname(), io_error()}.
 commit(Dir) ->
     commit(Dir, []).
@@ -111,7 +111,7 @@ commit(Dir) ->
 -spec commit(file:dirname_all(), [commit_option()]) ->
       {ok, Errors :: [{filename(), bad_cert_error() | invalid_cert_error() | io_error()}],
            Warnings :: [{filename(), bad_cert_error() | invalid_cert_error()}],
-           CAError :: {filename(), undefined | bad_cert_error() | io_error()}} |
+           CAError :: {filename(), bad_cert_error() | io_error()} | undefined} |
       {error, filename() | dirname(), io_error()}.
 commit(Dir, Opts) ->
     Validate = proplists:get_value(validate, Opts, soft),
@@ -432,7 +432,7 @@ der_decode({_, _, _}) ->
 -spec commit(state(), dirname(), filename(), false | soft | hard) ->
 	     {ok, [{filename(), bad_cert_error() | invalid_cert_error()}],
 	          [{filename(), invalid_cert_error()}],
-	          {filename(), undefined | bad_cert_error()}} |
+	          {filename(), bad_cert_error() | io_error()} | undefined} |
 	     {error, filename() | dirname(), io_error()}.
 commit(State, Dir, CAFile, ValidateHow) ->
     {Chains, BadCertsWithReason} = build_chains(State),
