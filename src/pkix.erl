@@ -55,7 +55,8 @@
 -type cert_chain() :: {[cert()], priv_key()}.
 -type pub_key() :: #'RSAPublicKey'{} | {integer(), #'Dss-Parms'{}} | #'ECPoint'{}.
 -type bad_cert_reason() :: missing_priv_key | bad_der | bad_pem | empty |
-			   encrypted | unknown_key_algo | unknown_key_type.
+			   encrypted | unknown_key_algo | unknown_key_type |
+			   unexpected_eof | nested_pem.
 -type invalid_cert_reason() :: cert_expired | invalid_issuer | invalid_signature |
 			       name_not_permitted | missing_basic_constraint |
 			       invalid_key_usage | selfsigned_peer | unknown_ca.
@@ -160,6 +161,10 @@ format_error({bad_cert, Line, bad_pem}) ->
     at_line(Line, "failed to decode from PEM format");
 format_error({bad_cert, Line, bad_der}) ->
     at_line(Line, "failed to decode from DER format");
+format_error({bad_cert, Line, unexpected_eof}) ->
+    at_line(Line, "unexpected end of file");
+format_error({bad_cert, Line, nested_pem}) ->
+    at_line(Line, "nested PEM entry");
 format_error({bad_cert, Line, encrypted}) ->
     at_line(Line, "encrypted certificate");
 format_error({bad_cert, Line, unknown_key_algo}) ->
@@ -332,7 +337,8 @@ pem_decode_file(Path) ->
     end.
 
 -spec pem_decode(file:fd(), pos_integer(), [{pos_integer(), binary()}]) ->
-			{ok, [{pos_integer(), binary()}]} | {error, io_error()}.
+			{ok, [{pos_integer(), binary()}]} |
+			{error, io_error() | bad_cert_error()}.
 pem_decode(Fd, Line, PEMs) ->
     case pem_decode(Fd, Line, 0, []) of
 	{ok, NewLine, PEM} ->
@@ -344,7 +350,8 @@ pem_decode(Fd, Line, PEMs) ->
     end.
 
 -spec pem_decode(file:fd(), pos_integer(), non_neg_integer(), [binary()]) ->
-      {ok, pos_integer(), {pos_integer(), binary()}} | {error, io_error()} | eof.
+			{ok, pos_integer(), {pos_integer(), binary()}} |
+			{error, io_error() | bad_cert_error()} | eof.
 pem_decode(Fd, Line, 0, []) ->
     case file:read_line(Fd) of
 	{ok, <<"-----BEGIN ", _/binary>> = Data} ->
@@ -359,8 +366,12 @@ pem_decode(Fd, Line, Begin, Buf) ->
 	{ok, <<"-----END ", _/binary>> = Data} ->
 	    PEM = list_to_binary(lists:reverse([Data|Buf])),
 	    {ok, Line+1, {Begin, PEM}};
+	{ok, <<"-----BEGIN ", _/binary>>} ->
+	    {error, {bad_cert, Line, nested_pem}};
 	{ok, Data} ->
 	    pem_decode(Fd, Line+1, Begin, [Data|Buf]);
+	eof ->
+	    {error, {bad_cert, Begin, unexpected_eof}};
 	Err ->
 	    Err
     end.
