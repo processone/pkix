@@ -156,7 +156,7 @@ get_cafile() ->
 
 -spec format_error(bad_cert_error() | invalid_cert_error() | io_error()) -> string().
 format_error({bad_cert, _Line, empty}) ->
-    "no supported PEM encoded entries found";
+    "no PEM encoded certificate or private key found";
 format_error({bad_cert, Line, bad_pem}) ->
     at_line(Line, "failed to decode from PEM format");
 format_error({bad_cert, Line, bad_der}) ->
