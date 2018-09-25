@@ -129,7 +129,7 @@ get_certfile() ->
 	'$end_of_table' -> error;
 	Domain ->
 	    try ets:lookup_element(?CERTFILE_TAB, Domain, 2)
-	    catch _:badarg -> error
+	    catch _:badarg -> get_certfile()
 	    end
     end.
 
