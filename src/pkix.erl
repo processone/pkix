@@ -23,8 +23,7 @@
 -export([start/0, stop/0, start_link/0]).
 -export([add_file/1, del_file/1]).
 -export([commit/1, commit/2]).
--export([get_certfile/1, get_certfiles/0]).
--export([get_default_certfile/0, get_default_cafile/0]).
+-export([get_certfile/0, get_certfile/1, get_certfiles/0, get_cafile/0]).
 -export([format_error/1, is_pem_file/1]).
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -33,6 +32,7 @@
 -include_lib("public_key/include/public_key.hrl").
 -include_lib("kernel/include/file.hrl").
 -define(CALL_TIMEOUT, timer:minutes(10)).
+-define(CERTFILE_TAB, pkix_certfiles).
 
 -record(pem, {file :: binary(),
 	      line :: pos_integer(),
@@ -101,55 +101,57 @@ is_pem_file(Path) ->
     end.
 
 -spec commit(file:dirname_all()) ->
-	     {ok, [{filename(), bad_cert_error() | invalid_cert_error() | io_error()}],
-	          {filename(), undefined | bad_cert_error() | io_error()}} |
-	     {error, filename() | dirname(), io_error()}.
+      {ok, Errors :: [{filename(), bad_cert_error() | invalid_cert_error() | io_error()}],
+           Warnings :: [{filename(), bad_cert_error() | invalid_cert_error()}],
+           CAError :: {filename(), undefined | bad_cert_error() | io_error()}} |
+      {error, filename() | dirname(), io_error()}.
 commit(Dir) ->
     commit(Dir, []).
 
 -spec commit(file:dirname_all(), [commit_option()]) ->
-	     {ok, [{filename(), bad_cert_error() | invalid_cert_error() | io_error()}],
-	          {filename(), undefined | bad_cert_error() | io_error()}} |
-	     {error, filename() | dirname(), io_error()}.
+      {ok, Errors :: [{filename(), bad_cert_error() | invalid_cert_error() | io_error()}],
+           Warnings :: [{filename(), bad_cert_error() | invalid_cert_error()}],
+           CAError :: {filename(), undefined | bad_cert_error() | io_error()}} |
+      {error, filename() | dirname(), io_error()}.
 commit(Dir, Opts) ->
     Validate = proplists:get_value(validate, Opts, soft),
     CAFile = case proplists:get_value(cafile, Opts) of
-		 undefined -> get_default_cafile();
+		 undefined -> get_cafile();
 		 Path -> prep_path(Path)
 	     end,
     gen_server:call(?MODULE, {commit, prep_path(Dir), CAFile, Validate}, ?CALL_TIMEOUT).
 
--spec get_certfile(binary()) -> {ok, binary()} | error.
-get_certfile(Domain) ->
-    try {ok, ets:lookup_element(?MODULE, Domain, 2)}
-    catch _:badarg ->
-	    GlobDomain = re:replace(Domain, "^[^\\.]+", "*", [{return, binary}]),
-	    try {ok, ets:lookup_element(?MODULE, GlobDomain, 2)}
+-spec get_certfile() -> {EC  :: filename() | undefined,
+			 RSA :: filename() | undefined,
+			 DSA :: filename() | undefined} | error.
+get_certfile() ->
+    case ets:first(?CERTFILE_TAB) of
+	'$end_of_table' -> error;
+	Domain ->
+	    try ets:lookup_element(?CERTFILE_TAB, Domain, 2)
 	    catch _:badarg -> error
 	    end
     end.
 
--spec get_certfiles() -> [{binary(), binary()}].
-get_certfiles() ->
-    ets:tab2list(?MODULE).
-
--spec get_default_certfile() -> {ok, binary()} | error.
-get_default_certfile() ->
-    case ets:first(?MODULE) of
-	'$end_of_table' ->
-	    error;
-	Domain ->
-	    case ets:lookup(?MODULE, Domain) of
-		[{_, Path}|_] ->
-		    {ok, Path};
-		[] ->
-		    error
+-spec get_certfile(binary()) -> {EC  :: filename() | undefined,
+				 RSA :: filename() | undefined,
+				 DSA :: filename() | undefined} | error.
+get_certfile(Domain) ->
+    try ets:lookup_element(?CERTFILE_TAB, Domain, 2)
+    catch _:badarg ->
+	    GlobDomain = re:replace(Domain, "^[^\\.]+", "*", [{return, binary}]),
+	    try ets:lookup_element(?CERTFILE_TAB, GlobDomain, 2)
+	    catch _:badarg -> error
 	    end
     end.
 
--spec get_default_cafile() -> filename().
-get_default_cafile() ->
-    get_default_cafile(possible_cafile_locations()).
+-spec get_certfiles() -> [{binary(), [{filename(), ec | rsa | dsa}]}].
+get_certfiles() ->
+    ets:tab2list(?CERTFILE_TAB).
+
+-spec get_cafile() -> filename().
+get_cafile() ->
+    get_cafile(possible_cafile_locations()).
 
 -spec format_error(bad_cert_error() | invalid_cert_error() | io_error()) -> string().
 format_error({bad_cert, _Line, empty}) ->
@@ -203,7 +205,7 @@ format_error(Reason) ->
 -spec init([]) -> {ok, state()}.
 init([]) ->
     process_flag(trap_exit, true),
-    ets:new(?MODULE, [named_table, public, {read_concurrency, true}]),
+    ets:new(?CERTFILE_TAB, [named_table, public, {read_concurrency, true}]),
     {ok, #state{}}.
 
 -spec handle_call({add_file, filename()} |
@@ -222,11 +224,11 @@ handle_call({del_file, Path}, _, State) ->
 handle_call({commit, Dir, CAFile, Validate}, _From, State) ->
     {BadCerts, State1} = reload_files(State),
     case commit(State1, Dir, CAFile, Validate) of
-	{ok, CertErrors, CAError} ->
+	{ok, CertErrors, CertWarns, CAError} ->
 	    State2 = State1#state{dir = Dir,
 				  cafile = CAFile,
 				  validate = Validate},
-	    {reply, {ok, BadCerts ++ CertErrors, CAError}, State2};
+	    {reply, {ok, BadCerts ++ CertErrors, CertWarns, CAError}, State2};
 	{error, _, _} = Err ->
 	    {reply, Err, State}
     end;
@@ -429,24 +431,31 @@ der_decode({_, _, _}) ->
 %%%===================================================================
 -spec commit(state(), dirname(), filename(), false | soft | hard) ->
 	     {ok, [{filename(), bad_cert_error() | invalid_cert_error()}],
+	          [{filename(), invalid_cert_error()}],
 	          {filename(), undefined | bad_cert_error()}} |
 	     {error, filename() | dirname(), io_error()}.
 commit(State, Dir, CAFile, ValidateHow) ->
     {Chains, BadCertsWithReason} = build_chains(State),
     {CAError, InvalidCertsWithReason} = validate(Chains, CAFile, ValidateHow),
     InvalidCerts = [C || {C, _} <- InvalidCertsWithReason],
+    ValidChains = drop_invalid_chains(Chains, InvalidCerts),
     SortedChains = case ValidateHow of
-		       hard ->
+		       hard when CAError == undefined ->
 			   ValidChains = drop_invalid_chains(Chains, InvalidCerts),
 			   sort_chains(ValidChains, []);
-		       _ ->
-			   sort_chains(Chains, InvalidCerts)
+		       hard -> [];
+		       _ -> sort_chains(Chains, InvalidCerts)
 		   end,
     case store_chains(SortedChains, Dir, State) of
 	ok ->
 	    Bad = map_errors(State, bad_cert, BadCertsWithReason),
 	    Invalid = map_errors(State, invalid_cert, InvalidCertsWithReason),
-	    {ok, Bad ++ Invalid, CAError};
+	    case ValidateHow of
+		hard ->
+		    {ok, Bad ++ Invalid, [], CAError};
+		_ ->
+		    {ok, Bad, Invalid, CAError}
+	    end;
 	{error, _, _} = Err ->
 	    Err
     end.
@@ -507,10 +516,15 @@ pubkey_from_privkey(#'DSAPrivateKey'{p = P, q = Q, g = G, y = Y}) ->
 pubkey_from_privkey(#'ECPrivateKey'{publicKey = Key}) ->
     #'ECPoint'{point = Key}.
 
+-spec cert_type(priv_key()) -> ec | rsa | dsa.
+cert_type(#'ECPrivateKey'{}) -> ec;
+cert_type(#'RSAPrivateKey'{}) -> rsa;
+cert_type(#'DSAPrivateKey'{}) -> dsa.
+
 -spec drop_invalid_chains([cert_chain()], [cert()]) -> [cert_chain()].
 drop_invalid_chains(Chains, InvalidCerts) ->
     lists:filter(
-      fun([Cert|_]) ->
+      fun({[Cert|_], _}) ->
 	      not lists:member(Cert, InvalidCerts)
       end, Chains).
 
@@ -561,18 +575,21 @@ store_chains(Chains, Dir, State) ->
 
 -spec store_chains([cert_chain()], dirname(), state(), map()) ->
 			  ok | {error, filename(), io_error()}.
-store_chains([{Certs, _} = Chain|Chains], Dir, State, Doms) ->
+store_chains([{Certs, PrivKey} = Chain|Chains], Dir, State, Doms) ->
     case store_chain(Chain, Dir, State) of
 	{ok, File} ->
 	    Cert = hd(Certs),
+	    Type = cert_type(PrivKey),
 	    File1 = unicode:characters_to_binary(File),
 	    Doms1 = case extract_domains(Cert) of
 			[] ->
-			    Doms#{<<>> => File1};
+			    Files = maps:get(<<>>, Doms, []),
+			    Doms#{<<>> => [{Type, File1}|Files]};
 			Domains ->
 			    lists:foldl(
 			      fun(Domain, Acc) ->
-				      Acc#{Domain => File1}
+				      Files = maps:get(Domain, Acc, []),
+				      Acc#{Domain => [{Type, File1}|Files]}
 			      end, Doms, Domains)
 		    end,
 	    store_chains(Chains, Dir, State, Doms1);
@@ -580,14 +597,22 @@ store_chains([{Certs, _} = Chain|Chains], Dir, State, Doms) ->
 	    Err
     end;
 store_chains([], Dir, _State, Doms) ->
-    Old = ets:tab2list(?MODULE),
-    New = maps:to_list(Doms),
-    ets:insert(?MODULE, New),
+    Old = ets:tab2list(?CERTFILE_TAB),
+    New = maps:fold(
+	    fun(Domain, Files, Acc) ->
+		    [{Domain, {proplists:get_value(ec, Files),
+			       proplists:get_value(rsa, Files),
+			       proplists:get_value(dsa, Files)}}|Acc]
+	    end, [], Doms),
+    ets:insert(?CERTFILE_TAB, New),
     lists:foreach(
       fun(Elem) ->
-	      ets:delete_object(?MODULE, Elem)
+	      ets:delete_object(?CERTFILE_TAB, Elem)
       end, Old -- New),
-    NewFiles = [File || {_, File} <- New],
+    NewFiles = lists:flatmap(
+		 fun({_, T}) ->
+			 [F || F <- tuple_to_list(T), F /= undefined]
+		 end, New),
     clear_dir(Dir, NewFiles).
 
 -spec store_chain(cert_chain(), dirname(), state()) ->
@@ -728,23 +753,23 @@ get_cert_path(G, [Root|_] = Acc) ->
 validate(_Chains, _CAFile, false) ->
     {undefined, []};
 validate(Chains, CAFile, _) ->
-    case pem_decode_file(CAFile) of
-	{error, Why} ->
-	    {{CAFile, Why}, []};
-	{ok, Ret, _} ->
-	    IssuerCerts = maps:keys(Ret),
-	    L = lists:filtermap(
-		  fun({Certs, _PrivKey}) ->
-			  RevCerts = lists:reverse(Certs),
-			  case validate_path(RevCerts, IssuerCerts) of
-			      ok ->
-				  false;
-			      {error, Reason} ->
-				  {true, {hd(RevCerts), Reason}}
-			  end
-		  end, Chains),
-	    {undefined, L}
-    end.
+    {CAError, IssuerCerts} = case pem_decode_file(CAFile) of
+				 {error, Why} ->
+				     {{CAFile, Why}, []};
+				 {ok, Ret, _} ->
+				     {undefined, maps:keys(Ret)}
+			     end,
+    {CAError,
+     lists:filtermap(
+       fun({Certs, _PrivKey}) ->
+	       RevCerts = lists:reverse(Certs),
+	       case validate_path(RevCerts, IssuerCerts) of
+		   ok ->
+		       false;
+		   {error, Reason} ->
+		       {true, {hd(RevCerts), Reason}}
+	       end
+       end, Chains)}.
 
 -spec validate_path([cert()], [cert()]) -> ok | {error, invalid_cert_reason()}.
 validate_path([Cert|_] = Certs, IssuerCerts) ->
@@ -777,13 +802,13 @@ find_issuer_cert(_Cert, []) ->
 %%%===================================================================
 %%% Defaults
 %%%===================================================================
--spec get_default_cafile([filename()]) -> filename().
-get_default_cafile([File|Files]) ->
+-spec get_cafile([filename()]) -> filename().
+get_cafile([File|Files]) ->
     case filelib:is_regular(File) of
 	true -> File;
-	false -> get_default_cafile(Files)
+	false -> get_cafile(Files)
     end;
-get_default_cafile([]) ->
+get_cafile([]) ->
     Dir = case code:priv_dir(?MODULE) of
 	      {error, _} -> "priv";
 	      Path -> Path
