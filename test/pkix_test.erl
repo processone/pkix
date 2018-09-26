@@ -19,6 +19,7 @@
 -module(pkix_test).
 -include_lib("eunit/include/eunit.hrl").
 
+-define(DSA_SELF_SIGNED, path("dsa-self-signed.pem")).
 -define(RSA_SELF_SIGNED, path("rsa-self-signed.pem")).
 -define(EC_SELF_SIGNED, path("ec-self-signed.pem")).
 
@@ -49,8 +50,11 @@ is_pem_file_test() ->
 				"no-domain.pem" -> true;
 				"prime256v1-cert.pem" -> true;
 				"prime256v1-key.pem" -> true;
+				"dsa-cert.pem" -> true;
+				"dsa-key.pem" -> true;
 				"rsa-cert.pem" -> true;
 				"rsa-key.pem" -> true;
+				"dsa-self-signed.pem" -> true;
 				"rsa-self-signed.pem" -> true;
 				"secp384r1-cert.pem" -> true;
 				"secp384r1-key.pem" -> true;
@@ -69,6 +73,16 @@ is_pem_file_test() ->
       fun(File) ->
 	      ?assertMatch({false, _}, pkix:is_pem_file(path(File)))
       end, Bad).
+
+add_del_dsa_key_test() ->
+    File = path("dsa-key.pem"),
+    ?assertEqual(ok, pkix:add_file(File)),
+    ?assertEqual(ok, pkix:del_file(File)).
+
+add_del_dsa_cert_test() ->
+    File = path("dsa-cert.pem"),
+    ?assertEqual(ok, pkix:add_file(File)),
+    ?assertEqual(ok, pkix:del_file(File)).
 
 add_del_rsa_key_test() ->
     File = path("rsa-key.pem"),
@@ -142,35 +156,44 @@ encrypted_key_test() ->
     ?assertMatch({error, {bad_cert, _, encrypted}}, pkix:add_file(File)).
 
 commit_self_signed_no_validate_test() ->
+    ?assertEqual(ok, pkix:add_file(?DSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:add_file(?RSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:add_file(?EC_SELF_SIGNED)),
     ?assertEqual({ok, [], [], undefined},
 		 pkix:commit(test_dir(), [{validate, false}])),
-    {EC, RSA, undefined} = pkix:get_certfile(<<"localhost">>),
+    {EC, RSA, DSA} = pkix:get_certfile(<<"localhost">>),
     ?assertEqual(true, filelib:is_regular(EC)),
     ?assertEqual(true, filelib:is_regular(RSA)),
+    ?assertEqual(true, filelib:is_regular(DSA)),
+    ?assertEqual(ok, pkix:del_file(?DSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:del_file(?RSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:del_file(?EC_SELF_SIGNED)),
     commit_empty().
 
 commit_self_signed_soft_validate_test() ->
+    ?assertEqual(ok, pkix:add_file(?DSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:add_file(?RSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:add_file(?EC_SELF_SIGNED)),
     ?assertMatch({ok, [], [{_, {invalid_cert, _, selfsigned_peer}},
+			   {_, {invalid_cert, _, selfsigned_peer}},
 			   {_, {invalid_cert, _, selfsigned_peer}}],
 		  undefined},
 		 pkix:commit(test_dir(), [])),
-    {EC, RSA, undefined} = pkix:get_certfile(<<"localhost">>),
+    {EC, RSA, DSA} = pkix:get_certfile(<<"localhost">>),
     ?assertEqual(true, filelib:is_regular(EC)),
     ?assertEqual(true, filelib:is_regular(RSA)),
+    ?assertEqual(true, filelib:is_regular(DSA)),
+    ?assertEqual(ok, pkix:del_file(?DSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:del_file(?RSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:del_file(?EC_SELF_SIGNED)),
     commit_empty().
 
 commit_self_signed_hard_validate_test() ->
+    ?assertEqual(ok, pkix:add_file(?DSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:add_file(?RSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:add_file(?EC_SELF_SIGNED)),
     ?assertMatch({ok, [{_, {invalid_cert, _, selfsigned_peer}},
+		       {_, {invalid_cert, _, selfsigned_peer}},
 		       {_, {invalid_cert, _, selfsigned_peer}}],
 		  [], undefined},
 		 pkix:commit(test_dir(), [{validate, hard}])),
@@ -179,11 +202,13 @@ commit_self_signed_hard_validate_test() ->
 missing_priv_key_test() ->
     Files = [path("rsa-cert.pem"),
 	     path("secp384r1-cert.pem"),
-	     path("prime256v1-cert.pem")],
+	     path("prime256v1-cert.pem"),
+	     path("dsa-cert.pem")],
     lists:foreach(
       fun(F) -> ?assertEqual(ok, pkix:add_file(F)) end,
       Files),
     ?assertMatch({ok, [{_, {bad_cert, _, missing_priv_key}},
+		       {_, {bad_cert, _, missing_priv_key}},
 		       {_, {bad_cert, _, missing_priv_key}},
 		       {_, {bad_cert, _, missing_priv_key}}],
 		  [], undefined},
@@ -216,14 +241,17 @@ commit_valid_chain_test() ->
     commit_empty().
 
 non_existent_cafile_test() ->
+    ?assertEqual(ok, pkix:add_file(?DSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:add_file(?RSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:add_file(?EC_SELF_SIGNED)),
     CAFile = path("foo"),
     ?assertMatch({ok, _, _, {CAFile, enoent}},
 		 pkix:commit(test_dir(), [{cafile, CAFile}])),
-    {EC, RSA, undefined} = pkix:get_certfile(<<"localhost">>),
+    {EC, RSA, DSA} = pkix:get_certfile(<<"localhost">>),
     ?assertEqual(true, filelib:is_regular(EC)),
     ?assertEqual(true, filelib:is_regular(RSA)),
+    ?assertEqual(true, filelib:is_regular(DSA)),
+    ?assertEqual(ok, pkix:del_file(?DSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:del_file(?RSA_SELF_SIGNED)),
     ?assertEqual(ok, pkix:del_file(?EC_SELF_SIGNED)),
     commit_empty().
