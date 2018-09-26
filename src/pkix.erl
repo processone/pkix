@@ -232,11 +232,12 @@ handle_call({del_file, Path}, _, State) ->
 handle_call({commit, Dir, CAFile, Validate}, _From, State) ->
     {BadCerts, State1} = reload_files(State),
     case commit(State1, Dir, CAFile, Validate) of
-	{ok, CertErrors, CertWarns, CAError} ->
+	{ok, Certs, Keys, CertErrors, CertWarns, CAError} ->
 	    State2 = State1#state{dir = Dir,
 				  cafile = CAFile,
 				  validate = Validate},
-	    {reply, {ok, BadCerts ++ CertErrors, CertWarns, CAError}, State2};
+	    State3 = update_state(State2, Certs, Keys),
+	    {reply, {ok, BadCerts ++ CertErrors, CertWarns, CAError}, State3};
 	{error, _, _} = Err ->
 	    {reply, Err, State}
     end;
@@ -320,6 +321,27 @@ reload_files(State) ->
 			       end
 		       end, State, Files),
     {lists:flatten(Errs), State1}.
+
+-spec update_state(state(),
+		   sets:set(cert()),
+		   sets:set(priv_key())) -> state().
+update_state(State, CertSet, KeySet) ->
+    Certs = maps:filter(
+	      fun(Cert, _) ->
+		      sets:is_element(Cert, CertSet)
+	      end, State#state.certs),
+    Keys = maps:filter(
+	     fun(Key, _) ->
+		     sets:is_element(Key, KeySet)
+	     end, State#state.keys),
+    FoldFun = fun(_, #pem{file = File}, Acc) -> sets:add_element(File, Acc) end,
+    Files1 = maps:fold(FoldFun, sets:new(), Certs),
+    Files2 = maps:fold(FoldFun, Files1, Keys),
+    Files = maps:filter(
+	      fun(File, _) ->
+		      sets:is_element(File, Files2)
+	      end, State#state.files),
+    State#state{files = Files, certs = Certs, keys = Keys}.
 
 %%%===================================================================
 %%% Certificate file decoding
@@ -446,7 +468,8 @@ der_decode({_, _, _}) ->
 %%% Certificate chains processing
 %%%===================================================================
 -spec commit(state(), dirname(), filename(), false | soft | hard) ->
-	     {ok, [{filename(), bad_cert_error() | invalid_cert_error()}],
+	     {ok, sets:set(cert()), sets:set(priv_key()),
+	          [{filename(), bad_cert_error() | invalid_cert_error()}],
 	          [{filename(), invalid_cert_error()}],
 	          {filename(), bad_cert_error() | io_error()} | undefined} |
 	     {error, filename() | dirname(), io_error()}.
@@ -462,14 +485,14 @@ commit(State, Dir, CAFile, ValidateHow) ->
 		       _ -> sort_chains(Chains, InvalidCerts)
 		   end,
     case store_chains(SortedChains, Dir, State) of
-	ok ->
+	{ok, StoredCerts, StoredKeys} ->
 	    Bad = map_errors(State, bad_cert, BadCertsWithReason),
 	    Invalid = map_errors(State, invalid_cert, InvalidCertsWithReason),
 	    case ValidateHow of
 		hard ->
-		    {ok, Bad ++ Invalid, [], CAError};
+		    {ok, StoredCerts, StoredKeys, Bad ++ Invalid, [], CAError};
 		_ ->
-		    {ok, Bad, Invalid, CAError}
+		    {ok, StoredCerts, StoredKeys, Bad, Invalid, CAError}
 	    end;
 	{error, _, _} = Err ->
 	    Err
@@ -573,52 +596,54 @@ map_errors(State, Type, CertsWithReason) ->
 %%% Certificates storage
 %%%===================================================================
 -spec store_chains([cert_chain()], dirname(), state()) ->
-			 ok | {error, filename() | dirname(), io_error()}.
+			  {ok, sets:set(cert()), sets:set(priv_key())} |
+			  {error, filename() | dirname(), io_error()}.
 store_chains(Chains, Dir, State) ->
     case State#state.dir of
 	Dir ->
-	    store_chains(Chains, Dir, State, #{});
+	    store_chains(Chains, Dir, State, #{}, #{}, #{});
 	_ ->
 	    case filelib:ensure_dir(filename:join(Dir, "foo")) of
 		ok ->
 		    clear_dir(Dir, []),
-		    store_chains(Chains, Dir, State, #{});
+		    store_chains(Chains, Dir, State, #{}, #{}, #{});
 		{error, Why} ->
 		    {error, Dir, Why}
 	    end
     end.
 
--spec store_chains([cert_chain()], dirname(), state(), map()) ->
-			  ok | {error, filename(), io_error()}.
-store_chains([{Certs, PrivKey} = Chain|Chains], Dir, State, Doms) ->
+-spec store_chains([cert_chain()], dirname(), state(), map(), map(), map()) ->
+			  {ok, sets:set(cert()), sets:set(priv_key())} |
+			  {error, filename(), io_error()}.
+store_chains([{[Cert|_], PrivKey} = Chain|Chains], Dir, State, Files, Certs, Keys) ->
     case store_chain(Chain, Dir, State) of
 	{ok, File} ->
-	    Cert = hd(Certs),
 	    Type = cert_type(PrivKey),
 	    File1 = unicode:characters_to_binary(File),
-	    Doms1 = case extract_domains(Cert) of
-			[] ->
-			    Files = maps:get(<<>>, Doms, []),
-			    Doms#{<<>> => [{Type, File1}|Files]};
-			Domains ->
-			    lists:foldl(
-			      fun(Domain, Acc) ->
-				      Files = maps:get(Domain, Acc, []),
-				      Acc#{Domain => [{Type, File1}|Files]}
-			      end, Doms, Domains)
-		    end,
-	    store_chains(Chains, Dir, State, Doms1);
+	    Domains = case extract_domains(Cert) of
+			  [] -> [<<>>];
+			  Ds -> Ds
+		      end,
+	    {Files1, Certs1, Keys1} =
+		lists:foldl(
+		  fun(Domain, {Fs, Cs, Ks}) ->
+			  FList = maps:get(Domain, Fs, []),
+			  {Fs#{Domain => [{Type, File1}|FList]},
+			   Cs#{Domain => element(1, Chain)},
+			   Ks#{Domain => PrivKey}}
+		  end, {Files, Certs, Keys}, Domains),
+	    store_chains(Chains, Dir, State, Files1, Certs1, Keys1);
 	{error, _, _} = Err ->
 	    Err
     end;
-store_chains([], Dir, _State, Doms) ->
+store_chains([], Dir, _State, FilesMap, CertsMap, KeysMap) ->
     Old = ets:tab2list(?CERTFILE_TAB),
     New = maps:fold(
 	    fun(Domain, Files, Acc) ->
 		    [{Domain, {proplists:get_value(ec, Files),
 			       proplists:get_value(rsa, Files),
 			       proplists:get_value(dsa, Files)}}|Acc]
-	    end, [], Doms),
+	    end, [], FilesMap),
     ets:insert(?CERTFILE_TAB, New),
     lists:foreach(
       fun(Elem) ->
@@ -628,7 +653,10 @@ store_chains([], Dir, _State, Doms) ->
 		 fun({_, T}) ->
 			 [F || F <- tuple_to_list(T), F /= undefined]
 		 end, New),
-    clear_dir(Dir, NewFiles).
+    clear_dir(Dir, NewFiles),
+    Certs = sets:from_list(lists:flatten(maps:values(CertsMap))),
+    Keys = sets:from_list(maps:values(KeysMap)),
+    {ok, Certs, Keys}.
 
 -spec store_chain(cert_chain(), dirname(), state()) ->
 			 {ok, filename()} | {error, filename(), io_error()}.

@@ -170,11 +170,7 @@ commit_self_signed_hard_validate_test() ->
 		       {_, {invalid_cert, _, selfsigned_peer}}],
 		  [], undefined},
 		 pkix:commit(test_dir(), [{validate, hard}])),
-    ?assertEqual(error, pkix:get_certfile()),
-    %% BUG: bad certs must be removed from staged automatically
-    ?assertEqual(ok, pkix:del_file(?RSA_SELF_SIGNED)),
-    ?assertEqual(ok, pkix:del_file(?EC_SELF_SIGNED)),
-    commit_empty().
+    ?assertEqual(error, pkix:get_certfile()).
 
 missing_priv_key_test() ->
     Files = [path("rsa-cert.pem"),
@@ -188,12 +184,7 @@ missing_priv_key_test() ->
 		       {_, {bad_cert, _, missing_priv_key}}],
 		  [], undefined},
 		 pkix:commit(test_dir())),
-    ?assertEqual(error, pkix:get_certfile()),
-    %% BUG: bad certs must be removed from staged automatically
-    lists:foreach(
-      fun(F) -> ?assertEqual(ok, pkix:del_file(F)) end,
-      Files),
-    commit_empty().
+    ?assertEqual(error, pkix:get_certfile()).
 
 commit_valid_test() ->
     File = path("valid-cert.pem"),
@@ -240,10 +231,7 @@ commit_valid_with_bad_cafile_test() ->
     ?assertMatch({ok, [{_, {invalid_cert, _, unknown_ca}}],
 		  [], {CAFile, {bad_cert, _, bad_pem}}},
 		 pkix:commit(test_dir(), [{cafile, CAFile}, {validate, hard}])),
-    ?assertEqual(error, pkix:get_certfile()),
-    %% BUG: bad certs must be removed from staged automatically
-    ?assertEqual(ok, pkix:del_file(File)),
-    commit_empty().
+    ?assertEqual(error, pkix:get_certfile()).
 
 commit_bad_dir_test() ->
     Dir = filename:join([test_dir(), "empty.pem", "foo"]),
