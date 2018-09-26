@@ -454,7 +454,6 @@ commit(State, Dir, CAFile, ValidateHow) ->
     {Chains, BadCertsWithReason} = build_chains(State),
     {CAError, InvalidCertsWithReason} = validate(Chains, CAFile, ValidateHow),
     InvalidCerts = [C || {C, _} <- InvalidCertsWithReason],
-    ValidChains = drop_invalid_chains(Chains, InvalidCerts),
     SortedChains = case ValidateHow of
 		       hard when CAError == undefined ->
 			   ValidChains = drop_invalid_chains(Chains, InvalidCerts),
