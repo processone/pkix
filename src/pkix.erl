@@ -574,16 +574,16 @@ map_errors(State, Type, CertsWithReason) ->
 			 ok | {error, filename() | dirname(), io_error()}.
 store_chains(Chains, Dir, State) ->
     case State#state.dir of
-	undefined ->
+	Dir ->
+	    store_chains(Chains, Dir, State, #{});
+	_ ->
 	    case filelib:ensure_dir(filename:join(Dir, "foo")) of
 		ok ->
 		    clear_dir(Dir, []),
 		    store_chains(Chains, Dir, State, #{});
 		{error, Why} ->
 		    {error, Dir, Why}
-	    end;
-	_ ->
-	    store_chains(Chains, Dir, State, #{})
+	    end
     end.
 
 -spec store_chains([cert_chain()], dirname(), state(), map()) ->

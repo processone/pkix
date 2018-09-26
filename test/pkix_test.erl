@@ -69,26 +69,22 @@ check_pem_files_test() ->
 add_del_rsa_key_test() ->
     File = path("rsa-key.pem"),
     ?assertEqual(ok, pkix:add_file(File)),
-    ?assertEqual(ok, pkix:del_file(File)),
-    commit_empty().
+    ?assertEqual(ok, pkix:del_file(File)).
 
 add_del_rsa_cert_test() ->
     File = path("rsa-cert.pem"),
     ?assertEqual(ok, pkix:add_file(File)),
-    ?assertEqual(ok, pkix:del_file(File)),
-    commit_empty().
+    ?assertEqual(ok, pkix:del_file(File)).
 
 add_del_ec_secp384r1_key_test() ->
     File = path("secp384r1-key.pem"),
     ?assertEqual(ok, pkix:add_file(File)),
-    ?assertEqual(ok, pkix:del_file(File)),
-    commit_empty().
+    ?assertEqual(ok, pkix:del_file(File)).
 
 add_del_ec_prime256v1_key_test() ->
     File = path("prime256v1-key.pem"),
     ?assertEqual(ok, pkix:add_file(File)),
-    ?assertEqual(ok, pkix:del_file(File)),
-    commit_empty().
+    ?assertEqual(ok, pkix:del_file(File)).
 
 del_non_existent_test() ->
     ?assertEqual(ok, pkix:del_file(path("foo.pem"))).
@@ -98,8 +94,7 @@ add_non_existent_test() ->
 
 add_del_cert_with_key_test() ->
     ?assertEqual(ok, pkix:add_file(?RSA_SELF_SIGNED)),
-    ?assertEqual(ok, pkix:del_file(?RSA_SELF_SIGNED)),
-    commit_empty().
+    ?assertEqual(ok, pkix:del_file(?RSA_SELF_SIGNED)).
 
 add_empty_file_test() ->
     File = path("empty.pem"),
@@ -120,8 +115,7 @@ unsupported_pem_2_test() ->
 ignore_text_between_pems_test() ->
     File = path("text-between.pem"),
     ?assertEqual(ok, pkix:add_file(File)),
-    ?assertEqual(ok, pkix:del_file(File)),
-    commit_empty().
+    ?assertEqual(ok, pkix:del_file(File)).
 
 unexpected_eof_test() ->
     File = path("unexpected-eof.pem"),
@@ -251,6 +245,10 @@ commit_valid_with_bad_cafile_test() ->
     ?assertEqual(ok, pkix:del_file(File)),
     commit_empty().
 
+commit_bad_dir_test() ->
+    Dir = filename:join([test_dir(), "empty.pem", "foo"]),
+    ?assertMatch({error, _, _}, pkix:commit(Dir)).
+
 no_domain_test() ->
     File = path("no-domain.pem"),
     ?assertEqual(ok, pkix:add_file(File)),
@@ -281,12 +279,8 @@ sort_by_validity_test() ->
     ?assertEqual(ok, pkix:add_file(Invalid)),
     ?assertMatch({ok, _, _, undefined},
 		 pkix:commit(test_dir(), [{cafile, CAFile}])),
-    {undefined, Cert, undefined} = pkix:get_certfile(<<"localhost">>),
-    {ok, Data1} = file:read_file(Valid),
-    {ok, Data2} = file:read_file(Cert),
-    PEM1 = lists:sort(public_key:pem_decode(Data1)),
-    PEM2 = lists:sort(public_key:pem_decode(Data2)),
-    ?assertEqual(PEM1, PEM2),
+    {undefined, File, undefined} = pkix:get_certfile(<<"localhost">>),
+    pem_files_are_equal(Valid, File),
     ?assertEqual(ok, pkix:del_file(Valid)),
     ?assertEqual(ok, pkix:del_file(Invalid)),
     commit_empty().
@@ -297,12 +291,8 @@ sort_by_expiration_date_test() ->
     ?assertEqual(ok, pkix:add_file(Old)),
     ?assertEqual(ok, pkix:add_file(New)),
     ?assertMatch({ok, _, _, undefined}, pkix:commit(test_dir())),
-    {undefined, Cert, undefined} = pkix:get_certfile(<<>>),
-    {ok, Data1} = file:read_file(New),
-    {ok, Data2} = file:read_file(Cert),
-    PEM1 = lists:sort(public_key:pem_decode(Data1)),
-    PEM2 = lists:sort(public_key:pem_decode(Data2)),
-    ?assertEqual(PEM1, PEM2),
+    {undefined, File, undefined} = pkix:get_certfile(<<>>),
+    pem_files_are_equal(New, File),
     ?assertEqual(ok, pkix:del_file(Old)),
     ?assertEqual(ok, pkix:del_file(New)),
     commit_empty().
@@ -355,3 +345,10 @@ path(File) ->
 commit_empty() ->
     ?assertEqual({ok, [], [], undefined}, pkix:commit(test_dir())),
     ?assertEqual([], pkix:get_certfiles()).
+
+pem_files_are_equal(File1, File2) ->
+    {ok, Data1} = file:read_file(File1),
+    {ok, Data2} = file:read_file(File2),
+    PEM1 = lists:sort(public_key:pem_decode(Data1)),
+    PEM2 = lists:sort(public_key:pem_decode(Data2)),
+    ?assertEqual(PEM1, PEM2).
