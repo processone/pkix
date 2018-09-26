@@ -393,7 +393,9 @@ pem_decode_entries([{Begin, Data}|PEMs], File, Certs, PrivKeys) ->
 		    {error, {bad_cert, Begin, Why}};
 		  _:_ ->
 		    {error, {bad_cert, Begin, bad_der}}
-	    end
+	    end;
+	[] ->
+	    pem_decode_entries(PEMs, File, Certs, PrivKeys)
     catch _:_ ->
 	    {error, {bad_cert, Begin, bad_pem}}
     end;
