@@ -236,7 +236,7 @@ handle_call({commit, Dir, CAFile, Validate}, _From, State) ->
 	    State2 = State1#state{dir = Dir,
 				  cafile = CAFile,
 				  validate = Validate},
-	    State3 = update_state(State2, Certs, Keys),
+	    State3 = filter_state(State2, Certs, Keys),
 	    {reply, {ok, BadCerts ++ CertErrors, CertWarns, CAError}, State3};
 	{error, _, _} = Err ->
 	    {reply, Err, State}
@@ -322,26 +322,24 @@ reload_files(State) ->
 		       end, State, Files),
     {lists:flatten(Errs), State1}.
 
--spec update_state(state(),
-		   sets:set(cert()),
-		   sets:set(priv_key())) -> state().
-update_state(State, CertSet, KeySet) ->
-    Certs = maps:filter(
-	      fun(Cert, _) ->
-		      sets:is_element(Cert, CertSet)
-	      end, State#state.certs),
-    Keys = maps:filter(
-	     fun(Key, _) ->
-		     sets:is_element(Key, KeySet)
-	     end, State#state.keys),
-    FoldFun = fun(_, #pem{file = File}, Acc) -> sets:add_element(File, Acc) end,
-    Files1 = maps:fold(FoldFun, sets:new(), Certs),
-    Files2 = maps:fold(FoldFun, Files1, Keys),
-    Files = maps:filter(
-	      fun(File, _) ->
-		      sets:is_element(File, Files2)
-	      end, State#state.files),
-    State#state{files = Files, certs = Certs, keys = Keys}.
+-spec filter_state(state(), [cert()], [priv_key()]) -> state().
+filter_state(State, Certs, Keys) ->
+    {Files1, NewCerts} = lists:mapfoldl(
+			   fun(Cert, Cs) ->
+				   Pem = maps:get(Cert, State#state.certs),
+				   {Pem#pem.file, Cs#{Cert => Pem}}
+			   end, #{}, Certs),
+    {Files2, NewKeys} = lists:mapfoldl(
+			  fun(Key, Ks) ->
+				  Pem = maps:get(Key, State#state.keys),
+				  {Pem#pem.file, Ks#{Key => Pem}}
+			  end, #{}, Keys),
+    NewFiles = lists:foldl(
+		 fun(File, Fs) ->
+			 Val = maps:get(File, State#state.files),
+			 Fs#{File => Val}
+		 end, #{}, Files1 ++ Files2),
+    State#state{files = NewFiles, certs = NewCerts, keys = NewKeys}.
 
 %%%===================================================================
 %%% Certificate file decoding
@@ -468,7 +466,7 @@ der_decode({_, _, _}) ->
 %%% Certificate chains processing
 %%%===================================================================
 -spec commit(state(), dirname(), filename(), false | soft | hard) ->
-	     {ok, sets:set(cert()), sets:set(priv_key()),
+	     {ok, [cert()], [priv_key()],
 	          [{filename(), bad_cert_error() | invalid_cert_error()}],
 	          [{filename(), invalid_cert_error()}],
 	          {filename(), bad_cert_error() | io_error()} | undefined} |
@@ -596,7 +594,7 @@ map_errors(State, Type, CertsWithReason) ->
 %%% Certificates storage
 %%%===================================================================
 -spec store_chains([cert_chain()], dirname(), state()) ->
-			  {ok, sets:set(cert()), sets:set(priv_key())} |
+			  {ok, [cert()], [priv_key()]} |
 			  {error, filename() | dirname(), io_error()}.
 store_chains(Chains, Dir, State) ->
     case State#state.dir of
@@ -613,7 +611,7 @@ store_chains(Chains, Dir, State) ->
     end.
 
 -spec store_chains([cert_chain()], dirname(), state(), map(), map(), map()) ->
-			  {ok, sets:set(cert()), sets:set(priv_key())} |
+			  {ok, [cert()], [priv_key()]} |
 			  {error, filename(), io_error()}.
 store_chains([{[Cert|_], PrivKey} = Chain|Chains], Dir, State, Files, Certs, Keys) ->
     case store_chain(Chain, Dir, State) of
@@ -654,8 +652,8 @@ store_chains([], Dir, _State, FilesMap, CertsMap, KeysMap) ->
 			 [F || F <- tuple_to_list(T), F /= undefined]
 		 end, New),
     clear_dir(Dir, NewFiles),
-    Certs = sets:from_list(lists:flatten(maps:values(CertsMap))),
-    Keys = sets:from_list(maps:values(KeysMap)),
+    Certs = lists:flatten(maps:values(CertsMap)),
+    Keys = maps:values(KeysMap),
     {ok, Certs, Keys}.
 
 -spec store_chain(cert_chain(), dirname(), state()) ->

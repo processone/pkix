@@ -31,10 +31,14 @@ start_test() ->
 get_certfiles_test() ->
     ?assertEqual([], pkix:get_certfiles()).
 
+non_existent_domain_certfile_test() ->
+    ?assertEqual(error, pkix:get_certfile(<<"foo">>)),
+    ?assertEqual(error, pkix:get_certfile(<<"bar.baz">>)).
+
 commit_empty_test() ->
     commit_empty().
 
-check_pem_files_test() ->
+is_pem_file_test() ->
     {ok, Files} = file:list_dir(test_dir()),
     {Good, Bad} = lists:partition(
 		    fun(Path) ->
@@ -316,6 +320,16 @@ format_error_test() ->
 		 pkix:format_error({invalid_cert, 1, unexpected})),
     ?assertEqual("unexpected", pkix:format_error(unexpected)),
     ?assertEqual("unexpected error: 123", pkix:format_error(123)).
+
+removed_before_commit_test() ->
+    {ok, CWD} = file:get_cwd(),
+    Src = path("valid-cert.pem"),
+    Dst = filename:join(CWD, "valid-cert.pem"),
+    ?assertMatch({ok, _}, file:copy(Src, Dst)),
+    ?assertEqual(ok, pkix:add_file(Dst)),
+    ?assertEqual(ok, file:delete(Dst)),
+    ?assertMatch({ok, [{_, enoent}], [], undefined},
+		 pkix:commit(test_dir())).
 
 stop_test() ->
     ?assertEqual(ok, pkix:stop()).
