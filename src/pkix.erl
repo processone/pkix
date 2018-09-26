@@ -140,9 +140,12 @@ get_certfile() ->
 get_certfile(Domain) ->
     try ets:lookup_element(?CERTFILE_TAB, Domain, 2)
     catch _:badarg ->
-	    GlobDomain = re:replace(Domain, "^[^\\.]+", "*", [{return, binary}]),
-	    try ets:lookup_element(?CERTFILE_TAB, GlobDomain, 2)
-	    catch _:badarg -> error
+	    case set_glob(Domain) of
+		<<>> -> error;
+		GlobDomain ->
+		    try ets:lookup_element(?CERTFILE_TAB, GlobDomain, 2)
+		    catch _:badarg -> error
+		    end
 	    end
     end.
 
@@ -918,3 +921,11 @@ clear_dir(Dir, WhiteList) ->
 		      [unicode:characters_to_binary(File)|Acc]
 	      end, []),
     lists:foreach(fun file:delete/1, Files -- WhiteList).
+
+-spec set_glob(binary()) -> binary().
+set_glob(<<$., Rest/binary>>) ->
+    <<$*, $., Rest/binary>>;
+set_glob(<<_, Rest/binary>>) ->
+    set_glob(Rest);
+set_glob(<<>>) ->
+    <<>>.
