@@ -63,7 +63,8 @@
 -type bad_cert_error() :: {bad_cert, pos_integer(), bad_cert_reason()}.
 -type invalid_cert_error() :: {invalid_cert, pos_integer(), invalid_cert_reason()}.
 -type io_error() :: file:posix().
--export_type([bad_cert_error/0, invalid_cert_error/0, io_error/0]).
+-type error_reason() :: bad_cert_error() | invalid_cert_error() | io_error().
+-export_type([error_reason/0]).
 
 %%%===================================================================
 %%% API
