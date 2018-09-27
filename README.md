@@ -31,7 +31,7 @@ repo to your rebar configuration or what have you.
 
 # Usage
 
-Start the library as a typical Erlang application:
+Start the library as a regular Erlang application:
 ```erl
 > application:ensure_all_started(pkix).
 ```
@@ -39,14 +39,14 @@ or use `pkix:start()` which does the same.
 
 Let's say you have two certificates: `cert1.pem` for `domain1` and `cert2.pem`
 for `domain2` with their private keys `key1.pem` and `key2.pem` and
-an intermediate CA certificate `ca-inter.pem`. Then the flow is the following:
+an intermediate CA certificate `ca-intermediate.pem`. Then the flow is the following:
 - Add all your PEM files to the "staged" area (the order doesn't matter):
 ```erl
 > pkix:add_file("cert1.pem").
 > pkix:add_file("cert2.pem").
 > pkix:add_file("key1.pem").
 > pkix:add_file("key2.pem").
-> pkix:add_file("ca.pem").
+> pkix:add_file("ca-intermediate.pem").
 ```
 - Commit the changes to some directory, let's say, `"/tmp/certs"`:
 ```erl
