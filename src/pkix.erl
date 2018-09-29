@@ -34,15 +34,15 @@
 -define(CALL_TIMEOUT, timer:minutes(10)).
 -define(CERTFILE_TAB, pkix_certfiles).
 
--record(pem, {file :: binary(),
-	      line :: pos_integer(),
-	      data :: binary()}).
+-record(pem, {file :: filename(),
+	      line :: pos_integer()}).
+
 -record(state, {files = #{}      :: map(),
 		certs = #{}      :: map(),
 		keys  = #{}      :: map(),
 		validate = false :: false | soft | hard,
-		dir              :: undefined | binary(),
-		cafile           :: undefined | binary()}).
+		dir              :: undefined | dirname(),
+		cafile           :: undefined | filename()}).
 
 -type state() :: #state{}.
 -type commit_option() :: {cafile, file:filename_all()} |
@@ -59,7 +59,8 @@
 			   unexpected_eof | nested_pem.
 -type invalid_cert_reason() :: cert_expired | invalid_issuer | invalid_signature |
 			       name_not_permitted | missing_basic_constraint |
-			       invalid_key_usage | selfsigned_peer | unknown_ca.
+			       invalid_key_usage | selfsigned_peer | unknown_ca |
+			       unused_priv_key.
 -type bad_cert_error() :: {bad_cert, pos_integer(), bad_cert_reason()}.
 -type invalid_cert_error() :: {invalid_cert, pos_integer(), invalid_cert_reason()}.
 -type io_error() :: file:posix().
@@ -196,6 +197,8 @@ format_error({invalid_cert, Line, selfsigned_peer}) ->
     at_line(Line, "self-signed certificate");
 format_error({invalid_cert, Line, unknown_ca}) ->
     at_line(Line, "certificate is signed by unknown CA");
+format_error({invalid_cert, Line, unused_priv_key}) ->
+    at_line(Line, "unused private key");
 format_error({invalid_cert, Line, Unknown}) ->
     at_line(Line, io_lib:format("~w", [Unknown]));
 format_error(Posix) when is_atom(Posix) ->
@@ -279,18 +282,22 @@ format_status(_Opt, Status) ->
 add_file(File, State) ->
     case mtime(File) of
 	{ok, MTime} ->
-	    case maps:get(File, State#state.files, 0) of
-		Time when MTime =< Time ->
+	    case maps:get(File, State#state.files, {0, [], []}) of
+		{Time, _, _} when MTime =< Time ->
 		    {ok, State};
 		_ ->
 		    case pem_decode_file(File) of
 			{ok, Certs, Keys} ->
-			    NewCerts = maps:merge(State#state.certs, Certs),
-			    NewKeys = maps:merge(State#state.keys, Keys),
-			    NewFiles = maps:put(File, MTime, State#state.files),
-			    {ok, State#state{files = NewFiles,
-					     certs = NewCerts,
-					     keys = NewKeys}};
+			    State1 = del_file(File, State),
+			    NewCerts = merge_maps(State1#state.certs, Certs),
+			    NewKeys = merge_maps(State1#state.keys, Keys),
+			    NewFiles = maps:put(
+					 File,
+					 {MTime, maps:keys(Certs), maps:keys(Keys)},
+					 State1#state.files),
+			    {ok, State1#state{files = NewFiles,
+					      certs = NewCerts,
+					      keys = NewKeys}};
 			{error, _} = Err ->
 			    Err
 		    end
@@ -301,11 +308,21 @@ add_file(File, State) ->
 
 -spec del_file(filename(), state()) -> state().
 del_file(File, State) ->
-    Filter = fun(_, #pem{file = F}) -> F /= File end,
-    NewFiles = maps:remove(File, State#state.files),
-    NewCerts = maps:filter(Filter, State#state.certs),
-    NewKeys = maps:filter(Filter, State#state.keys),
-    State#state{files = NewFiles, certs = NewCerts, keys = NewKeys}.
+    case maps:take(File, State#state.files) of
+	error -> State;
+	{{_, Cs, Ks}, NewFiles} ->
+	    Fold = fun(Obj, Acc) ->
+			   Pems = maps:get(Obj, Acc),
+			   Pems1 = [Pem || Pem <- Pems, Pem#pem.file /= File],
+			   case Pems1 of
+			       [] -> maps:remove(Obj, Acc);
+			       _ -> maps:put(Obj, Pems1, Acc)
+			   end
+		   end,
+	    NewCerts = lists:foldl(Fold, State#state.certs, Cs),
+	    NewKeys = lists:foldl(Fold, State#state.keys, Ks),
+	    State#state{files = NewFiles, certs = NewCerts, keys = NewKeys}
+    end.
 
 -spec reload_files(state()) -> {[{filename(), bad_cert_error() | io_error()}],
 				state()}.
@@ -325,21 +342,36 @@ reload_files(State) ->
 
 -spec filter_state(state(), [cert()], [priv_key()]) -> state().
 filter_state(State, Certs, Keys) ->
-    {Files1, NewCerts} = lists:mapfoldl(
-			   fun(Cert, Cs) ->
-				   Pem = maps:get(Cert, State#state.certs),
-				   {Pem#pem.file, Cs#{Cert => Pem}}
-			   end, #{}, Certs),
-    {Files2, NewKeys} = lists:mapfoldl(
-			  fun(Key, Ks) ->
-				  Pem = maps:get(Key, State#state.keys),
-				  {Pem#pem.file, Ks#{Key => Pem}}
-			  end, #{}, Keys),
+    {Files1, NewCerts} = lists:foldl(
+			   fun(Cert, {Fs, Cs}) ->
+				   Pems = maps:get(Cert, State#state.certs),
+				   {lists:foldl(
+				      fun(Pem, Acc) ->
+					      sets:add_element(
+						{Pem#pem.file, [Cert], []}, Acc)
+				      end, Fs, Pems),
+				    Cs#{Cert => Pems}}
+			   end, {sets:new(), #{}}, Certs),
+    {Files2, NewKeys} = lists:foldl(
+			  fun(Key, {Fs, Ks}) ->
+				  Pems = maps:get(Key, State#state.keys),
+				  {lists:foldl(
+				     fun(Pem, Acc) ->
+					     sets:add_element(
+					       {Pem#pem.file, [], [Key]}, Acc)
+				     end, Fs, Pems),
+				   Ks#{Key => Pems}}
+			  end, {sets:new(), #{}}, Keys),
     NewFiles = lists:foldl(
-		 fun(File, Fs) ->
-			 Val = maps:get(File, State#state.files),
-			 Fs#{File => Val}
-		 end, #{}, Files1 ++ Files2),
+		 fun({File, Cert, Key}, Acc) ->
+			 case maps:get(File, Acc, undefined) of
+			     undefined ->
+				 {MTime, _, _} = maps:get(File, State#state.files),
+				 maps:put(File, {MTime, Cert, Key}, Acc);
+			     {MTime, Cs, Ks} ->
+				 maps:put(File, {MTime, Cert ++ Cs, Key ++ Ks}, Acc)
+			 end
+		 end, #{}, sets:to_list(sets:union(Files1, Files2))),
     State#state{files = NewFiles, certs = NewCerts, keys = NewKeys}.
 
 %%%===================================================================
@@ -403,16 +435,18 @@ pem_decode(Fd, Line, Begin, Buf) ->
 -spec pem_decode_entries([{pos_integer(), binary()}], filename(),
 			 map(), map()) -> {ok, map(), map()} | {error, bad_cert_error()}.
 pem_decode_entries([{Begin, Data}|PEMs], File, Certs, PrivKeys) ->
-    P = #pem{file = File, line = Begin, data = Data},
+    P = #pem{file = File, line = Begin},
     try public_key:pem_decode(Data) of
 	[PemEntry] ->
 	    try der_decode(PemEntry) of
 		undefined ->
 		    pem_decode_entries(PEMs, File, Certs, PrivKeys);
 		#'OTPCertificate'{} = Cert ->
-		    pem_decode_entries(PEMs, File, Certs#{Cert => P}, PrivKeys);
+		    Certs1 = update_map(Cert, [P], Certs),
+		    pem_decode_entries(PEMs, File, Certs1, PrivKeys);
 		PrivKey ->
-		    pem_decode_entries(PEMs, File, Certs, PrivKeys#{PrivKey => P})
+		    PrivKeys1 = update_map(PrivKey, [P], PrivKeys),
+		    pem_decode_entries(PEMs, File, Certs, PrivKeys1)
 	    catch _:{bad_cert, Why} ->
 		    {error, {bad_cert, Begin, Why}};
 		  _:_ ->
@@ -473,7 +507,7 @@ der_decode({_, _, _}) ->
 	          {filename(), bad_cert_error() | io_error()} | undefined} |
 	     {error, filename() | dirname(), io_error()}.
 commit(State, Dir, CAFile, ValidateHow) ->
-    {Chains, BadCertsWithReason} = build_chains(State),
+    {Chains, BadCertsWithReason, UnusedKeysWithReason} = build_chains(State),
     {CAError, InvalidCertsWithReason} = validate(Chains, CAFile, ValidateHow),
     InvalidCerts = [C || {C, _} <- InvalidCertsWithReason],
     SortedChains = case ValidateHow of
@@ -485,22 +519,35 @@ commit(State, Dir, CAFile, ValidateHow) ->
 		   end,
     case store_chains(SortedChains, Dir, State) of
 	{ok, StoredCerts, StoredKeys} ->
-	    Bad = map_errors(State, bad_cert, BadCertsWithReason),
-	    Invalid = map_errors(State, invalid_cert, InvalidCertsWithReason),
+	    Bad = map_errors(State#state.certs, bad_cert, BadCertsWithReason),
+	    Invalid = map_errors(State#state.certs, invalid_cert, InvalidCertsWithReason),
+	    Unused = map_errors(State#state.keys, invalid_cert, UnusedKeysWithReason),
 	    case ValidateHow of
 		hard ->
-		    {ok, StoredCerts, StoredKeys, Bad ++ Invalid, [], CAError};
+		    {ok, StoredCerts, StoredKeys, Bad ++ Invalid, Unused, CAError};
 		_ ->
-		    {ok, StoredCerts, StoredKeys, Bad, Invalid, CAError}
+		    {ok, StoredCerts, StoredKeys, Bad, Invalid ++ Unused, CAError}
 	    end;
 	{error, _, _} = Err ->
 	    Err
     end.
 
--spec build_chains(state()) -> {[cert_chain()], [{cert(), bad_cert_reason()}]}.
+-spec build_chains(state()) -> {[cert_chain()],
+				[{cert(), bad_cert_reason()}],
+				[{priv_key(), invalid_cert_reason()}]}.
 build_chains(State) ->
     CertPaths = get_cert_paths(maps:keys(State#state.certs)),
-    match_cert_keys(CertPaths, maps:keys(State#state.keys)).
+    Keys = maps:keys(State#state.keys),
+    {Chains, BadCerts} = match_cert_keys(CertPaths, Keys),
+    UnusedKeys = lists:foldl(
+		   fun({_Chain, Key}, Acc) ->
+			   maps:remove(Key, Acc)
+		   end, State#state.keys, Chains),
+    UnusedKeysWithReason = maps:fold(
+			     fun(Key, _, Acc) ->
+				     [{Key, unused_priv_key}|Acc]
+			     end, [], UnusedKeys),
+    {Chains, BadCerts, UnusedKeysWithReason}.
 
 -spec match_cert_keys([cert_path()], [priv_key()]) ->
 		      {[cert_chain()], [{cert(), bad_cert_reason()}]}.
@@ -580,15 +627,16 @@ sort_chains(Chains, InvalidCerts) ->
 	      end
       end, Chains).
 
--spec map_errors(state(), bad_cert | invalid_cert,
-		 [{cert(), bad_cert_reason() | invalid_cert_reason()}]) ->
+-spec map_errors(map(), bad_cert | invalid_cert,
+		 [{cert() | priv_key(), bad_cert_reason() | invalid_cert_reason()}]) ->
 			[{filename(), bad_cert_error() | invalid_cert_error()}].
-map_errors(State, Type, CertsWithReason) ->
-    lists:map(
+map_errors(Map, Type, CertsWithReason) ->
+    lists:flatmap(
       fun({Cert, Reason}) ->
-	      #pem{file = File, line = Line} =
-		  maps:get(Cert, State#state.certs),
-	      {File, {Type, Line, Reason}}
+	      lists:map(
+		fun(#pem{file = File, line = Line}) ->
+			{File, {Type, Line, Reason}}
+		end, maps:get(Cert, Map))
       end, CertsWithReason).
 
 %%%===================================================================
@@ -659,10 +707,8 @@ store_chains([], Dir, _State, FilesMap, CertsMap, KeysMap) ->
 
 -spec store_chain(cert_chain(), dirname(), state()) ->
 			 {ok, filename()} | {error, filename(), io_error()}.
-store_chain({Certs, Key}, Dir, State) ->
-    PEM1 = pem_encode(Certs, State#state.certs),
-    PEM2 = pem_encode([Key], State#state.keys),
-    Data = iolist_to_binary([PEM1, PEM2]),
+store_chain(Chain, Dir, State) ->
+    Data = pem_encode(Chain, State),
     FileName = filename:join(Dir, sha1(Data)),
     case file:write_file(FileName, Data) of
 	ok ->
@@ -678,13 +724,26 @@ store_chain({Certs, Key}, Dir, State) ->
 	    {error, FileName, Why}
     end.
 
--spec pem_encode([cert()] | [priv_key()], map()) -> iolist().
-pem_encode(Objs, Map) ->
-    lists:map(
-      fun(Obj) ->
-	      #pem{file = File, line = Line, data = PEM} = maps:get(Obj, Map),
-	      [io_lib:format("From ~s:~B~n", [File, Line]), PEM]
-      end, Objs).
+-spec pem_encode(cert_chain(), state()) -> binary().
+pem_encode({Certs, Key}, State) ->
+    PEM1 = lists:map(
+	     fun(Cert) ->
+		     Type = element(1, Cert),
+		     DER = public_key:pkix_encode(Type, Cert, otp),
+		     PemEntry = {'Certificate', DER, not_encrypted},
+		     Source = lists:map(
+				fun(#pem{file = File, line = Line}) ->
+					io_lib:format("From ~s:~B~n", [File, Line])
+				end, maps:get(Cert, State#state.certs)),
+		     [Source, public_key:pem_encode([PemEntry])]
+	     end, Certs),
+    PEM2 = [[io_lib:format("From ~s:~B~n", [File, Line])
+	     || #pem{file = File, line = Line} <- maps:get(Key, State#state.keys)],
+	    public_key:pem_encode(
+	      [{element(1, Key),
+		public_key:der_encode(element(1, Key), Key),
+		not_encrypted}])],
+    iolist_to_binary([PEM1, PEM2]).
 
 %%%===================================================================
 %%% Domains extraction
@@ -955,3 +1014,16 @@ set_glob(<<_, Rest/binary>>) ->
     set_glob(Rest);
 set_glob(<<>>) ->
     <<>>.
+
+-spec update_map(term(), list(), map()) -> map().
+update_map(Key, Val, Map) ->
+    maps:update_with(
+      Key, fun(Vals) -> Val ++ Vals end,
+      Val, Map).
+
+-spec merge_maps(map(), map()) -> map().
+merge_maps(Map1, Map2) ->
+    maps:fold(
+      fun(Key, Val, Map) ->
+	      update_map(Key, Val, Map)
+      end, Map1, Map2).

@@ -215,6 +215,15 @@ missing_priv_key_test() ->
 		 pkix:commit(test_dir())),
     ?assertEqual(error, pkix:get_certfile()).
 
+unused_priv_key_test() ->
+    File = path("rsa-key.pem"),
+    ?assertEqual(ok, pkix:add_file(File)),
+    ?assertMatch({ok, [],
+		  [{_, {invalid_cert, _, unused_priv_key}}],
+		  undefined},
+		 pkix:commit(test_dir())),
+    ?assertEqual(error, pkix:get_certfile()).
+
 commit_valid_test() ->
     File = path("valid-cert.pem"),
     ?assertEqual(ok, pkix:add_file(File)),
@@ -332,7 +341,8 @@ format_error_test() ->
 	   unexpected_eof, nested_pem],
     Invalid = [cert_expired, invalid_issuer, invalid_signature,
 	       name_not_permitted, missing_basic_constraint,
-	       invalid_key_usage, selfsigned_peer, unknown_ca],
+	       invalid_key_usage, selfsigned_peer, unknown_ca,
+	       unused_priv_key],
     lists:foreach(
       fun(BadErr) ->
 	      ?assertNotMatch("unexpected " ++ _,
@@ -381,4 +391,4 @@ pem_files_are_equal(File1, File2) ->
     {ok, Data2} = file:read_file(File2),
     PEM1 = lists:sort(public_key:pem_decode(Data1)),
     PEM2 = lists:sort(public_key:pem_decode(Data2)),
-    ?assertEqual(PEM1, PEM2).
+    ?assertEqual(hd(PEM1), hd(PEM2)).
