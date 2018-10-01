@@ -308,9 +308,10 @@ add_file(File, State) ->
 
 -spec del_file(filename(), state()) -> state().
 del_file(File, State) ->
-    case maps:take(File, State#state.files) of
-	error -> State;
-	{{_, Cs, Ks}, NewFiles} ->
+    case maps:get(File, State#state.files, undefined) of
+	undefined ->
+	    State;
+	{_, Cs, Ks} ->
 	    Fold = fun(Obj, Acc) ->
 			   Pems = maps:get(Obj, Acc),
 			   Pems1 = [Pem || Pem <- Pems, Pem#pem.file /= File],
@@ -319,6 +320,7 @@ del_file(File, State) ->
 			       _ -> maps:put(Obj, Pems1, Acc)
 			   end
 		   end,
+	    NewFiles = maps:remove(File, State#state.files),
 	    NewCerts = lists:foldl(Fold, State#state.certs, Cs),
 	    NewKeys = lists:foldl(Fold, State#state.keys, Ks),
 	    State#state{files = NewFiles, certs = NewCerts, keys = NewKeys}
