@@ -1017,9 +1017,8 @@ set_glob(<<>>) ->
 
 -spec update_map(term(), list(), map()) -> map().
 update_map(Key, Val, Map) ->
-    maps:update_with(
-      Key, fun(Vals) -> Val ++ Vals end,
-      Val, Map).
+    Vals = maps:get(Key, Map, []),
+    maps:put(Key, Val ++ Vals, Map).
 
 -spec merge_maps(map(), map()) -> map().
 merge_maps(Map1, Map2) ->
