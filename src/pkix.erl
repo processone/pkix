@@ -882,9 +882,7 @@ validate_path([Cert|_] = Certs, IssuerCerts) ->
 		{ok, _} ->
 		    ok;
 		{error, {bad_cert, Reason}} ->
-		    {error, Reason};
-		{error, _} = Err ->
-		    Err
+		    {error, Reason}
 	    end;
 	error ->
 	    case public_key:pkix_is_self_signed(Cert) of
