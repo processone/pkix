@@ -881,6 +881,8 @@ validate_path([Cert|_] = Certs, IssuerCerts) ->
 	    case public_key:pkix_path_validation(IssuerCert, Certs, []) of
 		{ok, _} ->
 		    ok;
+		{error, {bad_cert, Reason}} ->
+		    {error, Reason};
 		{error, _} = Err ->
 		    Err
 	    end;
