@@ -382,9 +382,10 @@ filter_state(State, Certs, Keys) ->
 -spec pem_decode_file(filename()) -> {ok, map(), map()} |
 				     {error, bad_cert_error() | io_error()}.
 pem_decode_file(Path) ->
-    case file:open(Path, [read, raw, read_ahead, binary]) of
-	{ok, Fd} ->
-	    case pem_decode(Fd, 1, []) of
+    case file:read_file(Path) of
+	{ok, Data} ->
+	    Lines = re:split(Data, <<"\\R">>, [bsr_anycrlf]),
+	    case pem_decode(Lines, 1, []) of
 		{ok, PEMs} ->
 		    pem_decode_entries(PEMs, Path, #{}, #{});
 		{error, _} = Err ->
@@ -394,45 +395,43 @@ pem_decode_file(Path) ->
 	    Err
     end.
 
--spec pem_decode(file:fd(), pos_integer(), [{pos_integer(), binary()}]) ->
+-spec pem_decode([binary()], pos_integer(), [{pos_integer(), binary()}]) ->
 			{ok, [{pos_integer(), binary()}]} |
-			{error, io_error() | bad_cert_error()}.
-pem_decode(Fd, Line, PEMs) ->
-    case pem_decode(Fd, Line, 0, []) of
-	{ok, NewLine, PEM} ->
-	    pem_decode(Fd, NewLine, [PEM|PEMs]);
+			{error, bad_cert_error()}.
+pem_decode(Lines, LineNum, PEMs) ->
+    case pem_decode(Lines, LineNum, 0, []) of
+	{ok, NewLines, NewLineNum, PEM} ->
+	    pem_decode(NewLines, NewLineNum, [PEM|PEMs]);
 	eof ->
 	    {ok, lists:reverse(PEMs)};
 	{error, _} = Err ->
 	    Err
     end.
 
--spec pem_decode(file:fd(), pos_integer(), non_neg_integer(), [binary()]) ->
-			{ok, pos_integer(), {pos_integer(), binary()}} |
-			{error, io_error() | bad_cert_error()} | eof.
-pem_decode(Fd, Line, 0, []) ->
-    case file:read_line(Fd) of
-	{ok, <<"-----BEGIN ", _/binary>> = Data} ->
-	    pem_decode(Fd, Line+1, Line, [Data]);
-	{ok, _} ->
-	    pem_decode(Fd, Line+1, 0, []);
-	Err ->
-	    Err
+-spec pem_decode([binary()], pos_integer(), non_neg_integer(), [binary()]) ->
+			{ok, [binary()], pos_integer(), {pos_integer(), binary()}} |
+			{error, bad_cert_error()} | eof.
+pem_decode([Line|Lines], LineNum, 0, []) ->
+    case Line of
+	<<"-----BEGIN ", _/binary>> ->
+	    pem_decode(Lines, LineNum+1, LineNum, [$\n, Line]);
+	_ ->
+	    pem_decode(Lines, LineNum+1, 0, [])
     end;
-pem_decode(Fd, Line, Begin, Buf) ->
-    case file:read_line(Fd) of
-	{ok, <<"-----END ", _/binary>> = Data} ->
-	    PEM = list_to_binary(lists:reverse([Data|Buf])),
-	    {ok, Line+1, {Begin, PEM}};
-	{ok, <<"-----BEGIN ", _/binary>>} ->
-	    {error, {bad_cert, Line, nested_pem}};
-	{ok, Data} ->
-	    pem_decode(Fd, Line+1, Begin, [Data|Buf]);
-	eof ->
-	    {error, {bad_cert, Begin, unexpected_eof}};
-	Err ->
-	    Err
-    end.
+pem_decode([Line|Lines], LineNum, Begin, Buf) ->
+    case Line of
+	<<"-----END ", _/binary>> ->
+	    PEM = list_to_binary(lists:reverse([$\n, Line|Buf])),
+	    {ok, Lines, LineNum+1, {Begin, PEM}};
+	<<"-----BEGIN ", _/binary>> ->
+	    {error, {bad_cert, LineNum, nested_pem}};
+	_ ->
+	    pem_decode(Lines, LineNum+1, Begin, [$\n, Line|Buf])
+    end;
+pem_decode([], _, 0, []) ->
+    eof;
+pem_decode([], _, Begin, _) ->
+    {error, {bad_cert, Begin, unexpected_eof}}.
 
 -spec pem_decode_entries([{pos_integer(), binary()}], filename(),
 			 map(), map()) -> {ok, map(), map()} | {error, bad_cert_error()}.
