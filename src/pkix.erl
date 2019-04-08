@@ -21,7 +21,7 @@
 
 %% API
 -export([start/0, stop/0, start_link/0]).
--export([add_file/1, del_file/1]).
+-export([add_file/1, del_file/1, read_file/1]).
 -export([commit/1, commit/2]).
 -export([get_certfile/0, get_certfile/1, get_certfiles/0, get_cafile/0]).
 -export([format_error/1, is_pem_file/1]).
@@ -95,6 +95,19 @@ add_file(Path) ->
 -spec del_file(file:filename_all()) -> ok.
 del_file(Path) ->
     gen_server:call(?MODULE, {del_file, prep_path(Path)}, ?CALL_TIMEOUT).
+
+-spec read_file(file:filename_all()) -> {ok, map(), map()} |
+					{error, bad_cert_error() | io_error()}.
+read_file(Path) ->
+    case pem_decode_file(prep_path(Path)) of
+	{ok, CertMap, KeyMap} ->
+	    Filter = fun(_, PemFiles) ->
+			     [Line || #pem{line = Line} <- PemFiles]
+		     end,
+	    {ok, maps:map(Filter, CertMap), maps:map(Filter, KeyMap)};
+	{error, _} = Err ->
+	    Err
+    end.
 
 -spec is_pem_file(file:filename_all()) -> true | {false, bad_cert_error() | io_error()}.
 is_pem_file(Path) ->
