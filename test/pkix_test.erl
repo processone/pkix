@@ -62,6 +62,10 @@ is_pem_file_test() ->
 				"valid-cert.pem" -> true;
 				"old.pem" -> true;
 				"new.pem" -> true;
+				"gnutls-ca1.pem" -> true;
+				"gnutls-ca2.pem" -> true;
+				"gnutls-cert.pem" -> true;
+				"gnutls-key.pem" -> true;
 				_ -> false
 			    end
 		    end, Files),
@@ -368,6 +372,20 @@ removed_before_commit_test() ->
     ?assertEqual(ok, file:delete(Dst)),
     ?assertMatch({ok, [{_, enoent}], [], undefined},
 		 pkix:commit(test_dir())).
+
+gnutls_test() ->
+    Cert = path("gnutls-cert.pem"),
+    Key = path("gnutls-key.pem"),
+    SubCA = path("gnutls-ca1.pem"),
+    ?assertEqual(ok, pkix:add_file(Cert)),
+    ?assertEqual(ok, pkix:add_file(Key)),
+    ?assertEqual(ok, pkix:add_file(SubCA)),
+    ?assertEqual({ok, [], [], undefined},
+		 pkix:commit(test_dir(), [{cafile, path("gnutls-ca2.pem")}])),
+    ?assertEqual(ok, pkix:del_file(Cert)),
+    ?assertEqual(ok, pkix:del_file(Key)),
+    ?assertEqual(ok, pkix:del_file(SubCA)),
+    commit_empty().
 
 stop_test() ->
     ?assertEqual(ok, pkix:stop()).

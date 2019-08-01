@@ -35,7 +35,8 @@
 -define(CERTFILE_TAB, pkix_certfiles).
 
 -record(pem, {file :: filename(),
-	      line :: pos_integer()}).
+	      line :: pos_integer(),
+	      der  :: binary()}).
 
 -record(state, {files = #{}      :: map(),
 		certs = #{}      :: map(),
@@ -449,9 +450,9 @@ pem_decode([], _, Begin, _) ->
 -spec pem_decode_entries([{pos_integer(), binary()}], filename(),
 			 map(), map()) -> {ok, map(), map()} | {error, bad_cert_error()}.
 pem_decode_entries([{Begin, Data}|PEMs], File, Certs, PrivKeys) ->
-    P = #pem{file = File, line = Begin},
     try public_key:pem_decode(Data) of
-	[PemEntry] ->
+	[{_, DER, _} = PemEntry] ->
+	    P = #pem{file = File, der = DER, line = Begin},
 	    try der_decode(PemEntry) of
 		undefined ->
 		    pem_decode_entries(PEMs, File, Certs, PrivKeys);
@@ -522,7 +523,7 @@ der_decode({_, _, _}) ->
 	     {error, filename() | dirname(), io_error()}.
 commit(State, Dir, CAFile, ValidateHow) ->
     {Chains, BadCertsWithReason, UnusedKeysWithReason} = build_chains(State),
-    {CAError, InvalidCertsWithReason} = validate(Chains, CAFile, ValidateHow),
+    {CAError, InvalidCertsWithReason} = validate(State, Chains, CAFile, ValidateHow),
     InvalidCerts = [C || {C, _} <- InvalidCertsWithReason],
     SortedChains = case ValidateHow of
 		       hard when CAError == undefined ->
@@ -742,8 +743,7 @@ store_chain(Chain, Dir, State) ->
 pem_encode({Certs, Key}, State) ->
     PEM1 = lists:map(
 	     fun(Cert) ->
-		     Type = element(1, Cert),
-		     DER = public_key:pkix_encode(Type, Cert, otp),
+		     DER = get_der(Cert, State#state.certs),
 		     PemEntry = {'Certificate', DER, not_encrypted},
 		     Source = lists:map(
 				fun(#pem{file = File, line = Line}) ->
@@ -754,10 +754,13 @@ pem_encode({Certs, Key}, State) ->
     PEM2 = [[io_lib:format("From ~s:~B~n", [File, Line])
 	     || #pem{file = File, line = Line} <- maps:get(Key, State#state.keys)],
 	    public_key:pem_encode(
-	      [{element(1, Key),
-		public_key:der_encode(element(1, Key), Key),
-		not_encrypted}])],
+	      [{element(1, Key), get_der(Key, State#state.keys), not_encrypted}])],
     iolist_to_binary([PEM1, PEM2]).
+
+-spec get_der(cert() | priv_key(), map()) -> binary().
+get_der(Key, Map) ->
+    [#pem{der = DER}|_] = maps:get(Key, Map),
+    DER.
 
 %%%===================================================================
 %%% Domains extraction
@@ -862,12 +865,12 @@ get_cert_path(G, [Root|_] = Acc) ->
 %%%===================================================================
 %%% Certificates chain validation
 %%%===================================================================
--spec validate([cert_chain()], filename(), false | soft | hard) ->
+-spec validate(state(), [cert_chain()], filename(), false | soft | hard) ->
 	       {undefined | {filename(), bad_cert_error() | io_error()},
 		[{cert(), invalid_cert_reason()}]}.
-validate(_Chains, _CAFile, false) ->
+validate(_State, _Chains, _CAFile, false) ->
     {undefined, []};
-validate(Chains, CAFile, _) ->
+validate(State, Chains, CAFile, _) ->
     {CAError, IssuerCerts} = case pem_decode_file(CAFile) of
 				 {error, Why} ->
 				     {{CAFile, Why}, []};
@@ -878,7 +881,7 @@ validate(Chains, CAFile, _) ->
      lists:filtermap(
        fun({Certs, _PrivKey}) ->
 	       RevCerts = lists:reverse(Certs),
-	       case validate_path(RevCerts, IssuerCerts) of
+	       case validate_path(State, RevCerts, IssuerCerts) of
 		   ok ->
 		       false;
 		   {error, Reason} ->
@@ -886,11 +889,12 @@ validate(Chains, CAFile, _) ->
 	       end
        end, Chains)}.
 
--spec validate_path([cert()], [cert()]) -> ok | {error, invalid_cert_reason()}.
-validate_path([Cert|_] = Certs, IssuerCerts) ->
+-spec validate_path(state(), [cert()], [cert()]) -> ok | {error, invalid_cert_reason()}.
+validate_path(State, [Cert|_] = Certs, IssuerCerts) ->
     case find_issuer_cert(Cert, IssuerCerts) of
 	{ok, IssuerCert} ->
-	    case public_key:pkix_path_validation(IssuerCert, Certs, []) of
+	    DERs = [get_der(C, State#state.certs) || C <- Certs],
+	    case public_key:pkix_path_validation(IssuerCert, DERs, []) of
 		{ok, _} ->
 		    ok;
 		{error, {bad_cert, Reason}} ->
