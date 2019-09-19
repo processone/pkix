@@ -67,8 +67,8 @@
 -type certs_map() :: #{cert() => [#pem{}]}.
 -type keys_map() :: #{priv_key() => [#pem{}]}.
 -type pub_key() :: #'RSAPublicKey'{} | {integer(), #'Dss-Parms'{}} | #'ECPoint'{}.
--type notify_msg() :: {cert_expired, cert(), cert_info()}.
--type notify_fun() :: fun((notify_msg()) -> any()).
+-type notify_event() :: {cert_expired, cert(), cert_info()}.
+-type notify_fun() :: fun((notify_event()) -> any()).
 -type cert_info() :: #{files := [{filename(), line_num()}, ...],
 		       expiry := calendar:datetime(),
 		       domains := [binary()]}.
@@ -83,7 +83,7 @@
 -type invalid_cert_error() :: {invalid_cert, pos_integer(), invalid_cert_reason()}.
 -type io_error() :: file:posix().
 -type error_reason() :: bad_cert_error() | invalid_cert_error() | io_error().
--export_type([error_reason/0]).
+-export_type([error_reason/0, notify_event/0]).
 
 %%%===================================================================
 %%% API
