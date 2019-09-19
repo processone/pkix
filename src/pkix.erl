@@ -25,9 +25,12 @@
 -export([commit/1, commit/2]).
 -export([get_certfile/0, get_certfile/1, get_certfiles/0, get_cafile/0]).
 -export([format_error/1, is_pem_file/1]).
+-export([get_cert_info/1]).
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3, format_status/2]).
+%% For tests only
+-export([get_expiration_date/1, current_datetime/0, extract_domains/1]).
 
 -include_lib("public_key/include/public_key.hrl").
 -include_lib("kernel/include/file.hrl").
@@ -35,26 +38,40 @@
 -define(CERTFILE_TAB, pkix_certfiles).
 
 -record(pem, {file :: filename(),
-	      line :: pos_integer(),
+	      line :: line_num(),
 	      der  :: binary()}).
 
--record(state, {files = #{}      :: map(),
-		certs = #{}      :: map(),
-		keys  = #{}      :: map(),
-		validate = false :: false | soft | hard,
-		dir              :: undefined | dirname(),
-		cafile           :: undefined | filename()}).
+-record(state, {files = #{}         :: files_map(),
+		certs = #{}         :: certs_map(),
+		keys  = #{}         :: keys_map(),
+		validate = false    :: false | soft | hard,
+		dir                 :: undefined | dirname(),
+		cafile              :: undefined | filename(),
+		timers = sets:new() :: sets:set(),
+		notify_fun          :: undefined | notify_fun()}).
 
 -type state() :: #state{}.
+-type seconds() :: non_neg_integer().
 -type commit_option() :: {cafile, file:filename_all()} |
-			 {validate, false | soft | hard}.
+			 {validate, false | soft | hard} |
+			 {notify_before, [seconds()]} |
+			 {notify_fun, notify_fun()}.
 -type filename() :: binary().
 -type dirname() :: binary().
+-type line_num() :: pos_integer().
 -type cert() :: #'OTPCertificate'{}.
 -type priv_key() :: public_key:private_key().
 -type cert_path() :: {path, [cert()]}.
 -type cert_chain() :: {[cert()], priv_key()}.
+-type files_map() :: #{filename() => {calendar:datetime(), [cert()], [priv_key()]}}.
+-type certs_map() :: #{cert() => [#pem{}]}.
+-type keys_map() :: #{priv_key() => [#pem{}]}.
 -type pub_key() :: #'RSAPublicKey'{} | {integer(), #'Dss-Parms'{}} | #'ECPoint'{}.
+-type notify_msg() :: {cert_expired, cert(), cert_info()}.
+-type notify_fun() :: fun((notify_msg()) -> any()).
+-type cert_info() :: #{files := [{filename(), line_num()}, ...],
+		       expiry := calendar:datetime(),
+		       domains := [binary()]}.
 -type bad_cert_reason() :: missing_priv_key | bad_der | bad_pem | empty |
 			   encrypted | unknown_key_algo | unknown_key_type |
 			   unexpected_eof | nested_pem.
@@ -97,7 +114,8 @@ add_file(Path) ->
 del_file(Path) ->
     gen_server:call(?MODULE, {del_file, prep_path(Path)}, ?CALL_TIMEOUT).
 
--spec read_file(file:filename_all()) -> {ok, map(), map()} |
+-spec read_file(file:filename_all()) -> {ok, #{cert() => [line_num()]},
+					     #{priv_key() => [line_num()]}} |
 					{error, bad_cert_error() | io_error()}.
 read_file(Path) ->
     case pem_decode_file(prep_path(Path)) of
@@ -117,7 +135,7 @@ is_pem_file(Path) ->
 	{error, Why} -> {false, Why}
     end.
 
--spec commit(file:dirname_all()) ->
+-spec commit(file:filename_all()) ->
       {ok, Errors :: [{filename(), bad_cert_error() | invalid_cert_error() | io_error()}],
            Warnings :: [{filename(), bad_cert_error() | invalid_cert_error()}],
            CAError :: {filename(), bad_cert_error() | io_error()} | undefined} |
@@ -125,7 +143,7 @@ is_pem_file(Path) ->
 commit(Dir) ->
     commit(Dir, []).
 
--spec commit(file:dirname_all(), [commit_option()]) ->
+-spec commit(file:filename_all(), [commit_option()]) ->
       {ok, Errors :: [{filename(), bad_cert_error() | invalid_cert_error() | io_error()}],
            Warnings :: [{filename(), bad_cert_error() | invalid_cert_error()}],
            CAError :: {filename(), bad_cert_error() | io_error()} | undefined} |
@@ -136,7 +154,12 @@ commit(Dir, Opts) ->
 		 undefined -> get_cafile();
 		 Path -> prep_path(Path)
 	     end,
-    gen_server:call(?MODULE, {commit, prep_path(Dir), CAFile, Validate}, ?CALL_TIMEOUT).
+    NotifyBefore = proplists:get_value(notify_before, Opts, []),
+    NotifyFun = proplists:get_value(notify_fun, Opts),
+    gen_server:call(?MODULE,
+		    {commit, prep_path(Dir), CAFile, Validate, NotifyFun,
+		     lists:usort(NotifyBefore)},
+		    ?CALL_TIMEOUT).
 
 -spec get_certfile() -> {EC  :: filename() | undefined,
 			 RSA :: filename() | undefined,
@@ -172,6 +195,10 @@ get_certfiles() ->
 -spec get_cafile() -> filename().
 get_cafile() ->
     get_cafile(possible_cafile_locations()).
+
+-spec get_cert_info(cert()) -> {ok, cert_info()} | error.
+get_cert_info(Cert) ->
+    gen_server:call(?MODULE, {cert_info, Cert}, ?CALL_TIMEOUT).
 
 -spec format_error(bad_cert_error() | invalid_cert_error() | io_error()) -> string().
 format_error({bad_cert, _Line, empty}) ->
@@ -234,11 +261,7 @@ init([]) ->
     ets:new(?CERTFILE_TAB, [named_table, public, {read_concurrency, true}]),
     {ok, #state{}}.
 
--spec handle_call({add_file, filename()} |
-		  {del_file, filename()} |
-		  {commit, dirname(), filename(), false | soft | hard} |
-		  term(), term(), state()) ->
-			 {reply, term(), state()} | {noreply, state()}.
+-spec handle_call(_, _, state()) -> {reply, term(), state()} | {noreply, state()}.
 handle_call({add_file, Path}, _, State) ->
     case add_file(Path, State) of
 	{ok, State1} -> {reply, ok, State1};
@@ -247,17 +270,27 @@ handle_call({add_file, Path}, _, State) ->
 handle_call({del_file, Path}, _, State) ->
     State1 = del_file(Path, State),
     {reply, ok, State1};
-handle_call({commit, Dir, CAFile, Validate}, _From, State) ->
-    {BadCerts, State1} = reload_files(State),
-    case commit(State1, Dir, CAFile, Validate) of
+handle_call({commit, Dir, CAFile, Validate, NotifyFun, NotifyBefore}, _From, State) ->
+    State1 = cancel_timers(State),
+    {BadCerts, State2} = reload_files(State1),
+    case commit(State2, Dir, CAFile, Validate) of
 	{ok, Certs, Keys, CertErrors, CertWarns, CAError} ->
-	    State2 = State1#state{dir = Dir,
+	    State3 = State2#state{dir = Dir,
 				  cafile = CAFile,
+				  notify_fun = NotifyFun,
 				  validate = Validate},
-	    State3 = filter_state(State2, Certs, Keys),
-	    {reply, {ok, BadCerts ++ CertErrors, CertWarns, CAError}, State3};
+	    State4 = filter_state(State3, Certs, Keys),
+	    State5 = set_timers(State4, NotifyBefore),
+	    {reply, {ok, BadCerts ++ CertErrors, CertWarns, CAError}, State5};
 	{error, _, _} = Err ->
 	    {reply, Err, State}
+    end;
+handle_call({cert_info, Cert}, _From, State) ->
+    case maps:find(Cert, State#state.certs) of
+	{ok, Files} ->
+	    {reply, {ok, cert_info(Cert, Files)}, State};
+	error ->
+	    {reply, error, State}
     end;
 handle_call(Request, _From, State) ->
     error_logger:warning_msg("Unexpected call: ~p", [Request]),
@@ -269,6 +302,15 @@ handle_cast(Msg, State) ->
     {noreply, State}.
 
 -spec handle_info(term(), state()) -> {noreply, state()}.
+handle_info({timeout, Timer, {cert_expired, Cert}}, State) ->
+    case sets:is_element(Timer, State#state.timers) of
+	true ->
+	    notify_expired(State, Cert),
+	    Timers1 = sets:del_element(Timer, State#state.timers),
+	    {noreply, State#state{timers = Timers1}};
+	false ->
+	    {noreply, State}
+    end;
 handle_info(Info, State) ->
     error_logger:warning_msg("Unexpected info: ~p", [Info]),
     {noreply, State}.
@@ -390,10 +432,74 @@ filter_state(State, Certs, Keys) ->
 		 end, #{}, sets:to_list(sets:union(Files1, Files2))),
     State#state{files = NewFiles, certs = NewCerts, keys = NewKeys}.
 
+-spec set_timers(state(), [seconds()]) -> state().
+set_timers(#state{notify_fun = NotifyFun} = State,
+	   NotifyBefore) when NotifyFun /= undefined ->
+    {Timers, _} =
+	lists:foldl(
+	  fun(_, {_, []} = Acc) -> Acc;
+	     (SecondsLeft, {Timers1, Certs1}) ->
+		  lists:foldl(
+		    fun({Cert, Files}, {Timers2, Certs2} = Acc) ->
+			    ExpireTime = calendar:datetime_to_gregorian_seconds(
+					   get_expiration_date(Cert)),
+			    CurrentTime = calendar:datetime_to_gregorian_seconds(
+					    current_datetime()),
+			    NotifyTime = ExpireTime - SecondsLeft,
+			    Timeout = NotifyTime - CurrentTime,
+			    if Timeout > 0 ->
+				    TRef = erlang:start_timer(
+					     timer:seconds(Timeout),
+					     self(),
+					     {cert_expired, Cert}),
+				    {sets:add_element(TRef, Timers2), [{Cert, Files}|Certs2]};
+			       true ->
+				    notify_expired(NotifyFun, Cert, Files),
+				    Acc
+			    end
+		    end, {Timers1, []}, Certs1)
+	  end, {sets:new(), maps:to_list(State#state.certs)}, NotifyBefore),
+    State#state{timers = Timers};
+set_timers(State, _) ->
+    State.
+
+-spec cancel_timers(state()) -> state().
+cancel_timers(State) ->
+    lists:foreach(
+      fun(Timer) ->
+	      erlang:cancel_timer(Timer),
+	      receive {timeout, Timer, _} -> ok
+	      after 0 -> ok
+	      end
+      end, sets:to_list(State#state.timers)),
+    State#state{timers = sets:new()}.
+
+-spec notify_expired(state(), cert()) -> any().
+notify_expired(#state{notify_fun = undefined}, _) ->
+    ok;
+notify_expired(State, Cert) ->
+    case maps:find(Cert, State#state.certs) of
+	{ok, Files} ->
+	    notify_expired(State#state.notify_fun, Cert, Files);
+	error ->
+	    ok
+    end.
+
+-spec notify_expired(notify_fun(), cert(), [#pem{}]) -> any().
+notify_expired(NotifyFun, Cert, Files) ->
+    CertInfo = cert_info(Cert, Files),
+    NotifyFun({cert_expired, Cert, CertInfo}).
+
+-spec cert_info(cert(), [#pem{}]) -> cert_info().
+cert_info(Cert, Files) ->
+    #{domains => extract_domains(Cert),
+      files => [{File, Line} || #pem{file = File, line = Line} <- Files],
+      expiry => get_expiration_date(Cert)}.
+
 %%%===================================================================
 %%% Certificate file decoding
 %%%===================================================================
--spec pem_decode_file(filename()) -> {ok, map(), map()} |
+-spec pem_decode_file(filename()) -> {ok, certs_map(), keys_map()} |
 				     {error, bad_cert_error() | io_error()}.
 pem_decode_file(Path) ->
     case file:read_file(Path) of
@@ -448,7 +554,8 @@ pem_decode([], _, Begin, _) ->
     {error, {bad_cert, Begin, unexpected_eof}}.
 
 -spec pem_decode_entries([{pos_integer(), binary()}], filename(),
-			 map(), map()) -> {ok, map(), map()} | {error, bad_cert_error()}.
+			 certs_map(), keys_map()) ->
+				{ok, certs_map(), keys_map()} | {error, bad_cert_error()}.
 pem_decode_entries([{Begin, Data}|PEMs], File, Certs, PrivKeys) ->
     try public_key:pem_decode(Data) of
 	[{_, DER, _} = PemEntry] ->
@@ -642,7 +749,7 @@ sort_chains(Chains, InvalidCerts) ->
 	      end
       end, Chains).
 
--spec map_errors(map(), bad_cert | invalid_cert,
+-spec map_errors(certs_map() | keys_map(), bad_cert | invalid_cert,
 		 [{cert() | priv_key(), bad_cert_reason() | invalid_cert_reason()}]) ->
 			[{filename(), bad_cert_error() | invalid_cert_error()}].
 map_errors(Map, Type, CertsWithReason) ->
@@ -674,7 +781,8 @@ store_chains(Chains, Dir, State) ->
 	    end
     end.
 
--spec store_chains([cert_chain()], dirname(), state(), map(), map(), map()) ->
+-spec store_chains([cert_chain()], dirname(), state(),
+		   files_map(), certs_map(), keys_map()) ->
 			  {ok, [cert()], [priv_key()]} |
 			  {error, filename(), io_error()}.
 store_chains([{[Cert|_], PrivKey} = Chain|Chains], Dir, State, Files, Certs, Keys) ->
@@ -757,7 +865,7 @@ pem_encode({Certs, Key}, State) ->
 	      [{element(1, Key), get_der(Key, State#state.keys), not_encrypted}])],
     iolist_to_binary([PEM1, PEM2]).
 
--spec get_der(cert() | priv_key(), map()) -> binary().
+-spec get_der(cert() | priv_key(), certs_map() | keys_map()) -> binary().
 get_der(Key, Map) ->
     [#pem{der = DER}|_] = maps:get(Key, Map),
     DER.
@@ -970,26 +1078,36 @@ prep_path(Path0) ->
 	    unicode:characters_to_binary(Path0)
     end.
 
--spec get_timestamp({utcTime | generalTime, string()}) -> string().
-get_timestamp({utcTime, [Y1,Y2|T]}) ->
-    case list_to_integer([Y1,Y2]) of
-        N when N >= 50 -> [$1,$9,Y1,Y2|T];
-	_ -> [$2,$0,Y1,Y2|T]
-    end;
-get_timestamp({generalTime, TS}) ->
-    TS.
+-spec get_expiration_date(cert()) -> calendar:datetime().
+get_expiration_date(#'OTPCertificate'{
+		  tbsCertificate =
+		      #'OTPTBSCertificate'{
+			 validity = #'Validity'{notAfter = NotAfter}}}) ->
+    get_datetime(NotAfter).
+
+-spec get_datetime({utcTime | generalTime, string()}) -> calendar:datetime().
+get_datetime({utcTime, [Y1,Y2|T]}) ->
+    get_datetime(
+      case list_to_integer([Y1,Y2]) of
+	  N when N >= 50 -> {generalTime, [$1,$9,Y1,Y2|T]};
+	  _ -> {generalTime, [$2,$0,Y1,Y2|T]}
+      end);
+get_datetime({generalTime, T1}) ->
+    [Y1,Y2,Y3,Y4,M1,M2,D1,D2,H1,H2,Mi1,Mi2,S1,S2,$*|_] = [C - $0 || C <- T1],
+    Date = {Y1*1000+Y2*100+Y3*10+Y4, M1*10+M2, D1*10+D2},
+    Time = {H1*10+H2, Mi1*10+Mi2, S1*10+S2},
+    {Date, Time};
+get_datetime(_) ->
+    {{0,0,0}, {0,0,0}}.
+
+-spec current_datetime() -> calendar:datetime().
+current_datetime() ->
+    calendar:now_to_datetime(erlang:timestamp()).
 
 %% Returns true if the first certificate has sooner expiration date
 -spec compare_expiration_date(cert(), cert()) -> boolean().
-compare_expiration_date(#'OTPCertificate'{
-			   tbsCertificate =
-			       #'OTPTBSCertificate'{
-				  validity = #'Validity'{notAfter = After1}}},
-			#'OTPCertificate'{
-			   tbsCertificate =
-			       #'OTPTBSCertificate'{
-				  validity = #'Validity'{notAfter = After2}}}) ->
-    get_timestamp(After1) =< get_timestamp(After2).
+compare_expiration_date(Cert1, Cert2) ->
+    get_expiration_date(Cert1) =< get_expiration_date(Cert2).
 
 -spec sha1(iodata()) -> binary().
 sha1(Text) ->

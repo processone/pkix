@@ -66,6 +66,9 @@ is_pem_file_test() ->
 				"gnutls-ca2.pem" -> true;
 				"gnutls-cert.pem" -> true;
 				"gnutls-key.pem" -> true;
+				"expired.pem" -> true;
+				"localhost-old.pem" -> true;
+				"localhost-new.pem" -> true;
 				_ -> false
 			    end
 		    end, Files),
@@ -329,6 +332,70 @@ sort_by_expiration_date_test() ->
     ?assertEqual(ok, pkix:del_file(Old)),
     ?assertEqual(ok, pkix:del_file(New)),
     commit_empty().
+
+cert_info_test() ->
+    File = path("valid-cert.pem"),
+    {ok, Certs, _} = pkix:read_file(File),
+    [Cert] = maps:keys(Certs),
+    ?assertEqual(error, pkix:get_cert_info(Cert)),
+    ?assertEqual(ok, pkix:add_file(File)),
+    Expiry = pkix:get_expiration_date(Cert),
+    Files = [{iolist_to_binary(File), 1}],
+    Domains = pkix:extract_domains(Cert),
+    ?assertMatch({ok, #{files := Files,
+			expiry := Expiry,
+			domains := Domains}},
+		 pkix:get_cert_info(Cert)),
+    ?assertEqual(ok, pkix:del_file(File)),
+    commit_empty().
+
+notify_before_test_() ->
+    {timeout, 10, fun notify_before/0}.
+
+notify_before() ->
+    Old = path("localhost-old.pem"),
+    New = path("localhost-new.pem"),
+    Expired = path("expired.pem"),
+    ?assertEqual(ok, pkix:add_file(Old)),
+    ?assertEqual(ok, pkix:add_file(New)),
+    ?assertEqual(ok, pkix:add_file(Expired)),
+    {ok, OldCerts, _} = pkix:read_file(Old),
+    {ok, NewCerts, _} = pkix:read_file(New),
+    {ok, ExpiredCerts, _} = pkix:read_file(Expired),
+    [OldCert] = maps:keys(OldCerts),
+    [NewCert] = maps:keys(NewCerts),
+    [ExpiredCert] = maps:keys(ExpiredCerts),
+    Self = self(),
+    NotifyFun = fun(Event) -> Self ! Event end,
+    NotifyBefore = lists:map(
+		     fun({Seconds, Cert}) ->
+			     ExpDate = calendar:datetime_to_gregorian_seconds(
+					 pkix:get_expiration_date(Cert)),
+			     CurrDate = calendar:datetime_to_gregorian_seconds(
+					  pkix:current_datetime()),
+			     max(0, ExpDate - CurrDate - Seconds)
+		     end, [{0, ExpiredCert}, {2, OldCert}, {4, NewCert}]),
+    ?assertMatch({ok, _, _, _},
+		 pkix:commit(test_dir(),
+			     [{validate, false},
+			      {notify_fun, NotifyFun},
+			      {notify_before, NotifyBefore}])),
+    recv_expiration([ExpiredCert, OldCert, OldCert, NewCert]),
+    ?assertEqual(ok, pkix:del_file(Old)),
+    ?assertEqual(ok, pkix:del_file(New)),
+    ?assertEqual(ok, pkix:del_file(Expired)),
+    commit_empty().
+
+recv_expiration([Cert|Certs]) ->
+    receive
+	Msg ->
+	    ?assertMatch({cert_expired, Cert, _}, Msg),
+	    {_, _, Info} = Msg,
+	    ?assertEqual({ok, Info}, pkix:get_cert_info(Cert)),
+	    recv_expiration(Certs)
+    end;
+recv_expiration([]) ->
+    ok.
 
 unexpected_call_test() ->
     ?assertExit({timeout, _}, gen_server:call(pkix, eunit_call, 10)).
