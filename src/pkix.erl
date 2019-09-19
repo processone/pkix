@@ -83,7 +83,7 @@
 -type invalid_cert_error() :: {invalid_cert, pos_integer(), invalid_cert_reason()}.
 -type io_error() :: file:posix().
 -type error_reason() :: bad_cert_error() | invalid_cert_error() | io_error().
--export_type([error_reason/0, notify_event/0]).
+-export_type([error_reason/0, notify_event/0, cert_info/0]).
 
 %%%===================================================================
 %%% API
