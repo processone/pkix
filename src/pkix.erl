@@ -878,8 +878,9 @@ extract_domains(Cert) ->
     TBSCert = Cert#'OTPCertificate'.tbsCertificate,
     {rdnSequence, Subject} = TBSCert#'OTPTBSCertificate'.subject,
     Extensions = TBSCert#'OTPTBSCertificate'.extensions,
-    get_domain_from_subject(lists:flatten(Subject)) ++
-        get_domains_from_san(Extensions).
+    lists:usort(
+      get_domain_from_subject(lists:flatten(Subject)) ++
+	  get_domains_from_san(Extensions)).
 
 -spec get_domain_from_subject([#'AttributeTypeAndValue'{}]) -> [binary()].
 get_domain_from_subject(AttrVals) ->
