@@ -839,7 +839,7 @@ store_chain(Chain, Dir, State) ->
 		ok -> ok;
 		{error, Why} ->
 		    error_logger:warning_msg(
-		      "Failed to change permissions of ~s: ~s",
+		      "Failed to change permissions of ~ts: ~s",
 		      [FileName, file:format_error(Why)])
 	    end,
 	    {ok, FileName};
@@ -855,11 +855,11 @@ pem_encode({Certs, Key}, State) ->
 		     PemEntry = {'Certificate', DER, not_encrypted},
 		     Source = lists:map(
 				fun(#pem{file = File, line = Line}) ->
-					io_lib:format("From ~s:~B~n", [File, Line])
+					io_lib:format("From ~ts:~B~n", [File, Line])
 				end, maps:get(Cert, State#state.certs)),
 		     [Source, public_key:pem_encode([PemEntry])]
 	     end, Certs),
-    PEM2 = [[io_lib:format("From ~s:~B~n", [File, Line])
+    PEM2 = [[io_lib:format("From ~ts:~B~n", [File, Line])
 	     || #pem{file = File, line = Line} <- maps:get(Key, State#state.keys)],
 	    public_key:pem_encode(
 	      [{element(1, Key), get_der(Key, State#state.keys), not_encrypted}])],
