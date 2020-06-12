@@ -21,7 +21,7 @@ The purpose of the library is to do this dirty job under the hood.
 
 To compile the library you need:
 
- - Erlang/OTP ≥ 17.5
+ - Erlang/OTP ≥ 19.0
  - GNU Make. Optional: for running tests or standalone compilation.
 
 # Compiling
