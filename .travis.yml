@@ -1,9 +1,10 @@
-language: erlang
-
-os: linux
 arch: 
   - ppc64le
   - amd64
+  
+language: erlang
+
+os: linux
 
 dist: xenial
 
