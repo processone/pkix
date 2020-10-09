@@ -25,7 +25,7 @@ otp_release:
 jobs: 
   exclude:
     - arch: ppc64le
-      otp_release 19.0
+      otp_release: 19.0
       
 after_success:
   - cpp-coveralls --exclude lib --exclude tests --gcov-options '\-lp' --dump c.json
