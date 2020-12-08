@@ -1,3 +1,7 @@
+# Version 1.0.7
+
+* Update travis config
+
 # Version 1.0.5
 
 * Update release year 
