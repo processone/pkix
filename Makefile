@@ -1,24 +1,32 @@
-REBAR=./rebar
+REBAR ?= ./rebar
+
+IS_REBAR3:=$(shell expr `$(REBAR) --version | awk -F '[ .]' '/rebar / {print $$2}'` '>=' 3)
 
 all: src
 
 src:
-	$(REBAR) get-deps compile
+	$(REBAR) get-deps
+	$(REBAR) compile
 
 clean:
 	$(REBAR) clean
 
 distclean: clean
+	rm -rf _build
 	rm -rf deps
 	rm -rf ebin
 	rm -rf dialyzer
 
 test: all
-	$(REBAR) -v skip_deps=true eunit
+	$(REBAR) eunit
 
 xref: all
-	$(REBAR) skip_deps=true xref
+	$(REBAR) xref
 
+ifeq "$(IS_REBAR3)" "1"
+dialyzer:
+	$(REBAR) dialyzer
+else
 deps := $(wildcard deps/*/ebin)
 
 APPS=kernel stdlib erts public_key crypto asn1
@@ -57,6 +65,7 @@ dialyzer: erlang_plt pkix_plt #deps_plt pkix_plt
 	@dialyzer --plts dialyzer/*.plt --no_check_plt \
 	--get_warnings -o dialyzer/error.log ebin; \
 	status=$$? ; if [ $$status -ne 2 ]; then exit $$status; else exit 0; fi
+endif
 
 check-syntax:
 	gcc -o nul -S ${CHK_SOURCES}
