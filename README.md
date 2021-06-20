@@ -1,5 +1,10 @@
 PKIX certificates management library for Erlang
 ===============================================
+
+[![CI](https://github.com/processone/pkix/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/processone/pkix/actions/workflows/ci.yml)
+[![Coverage Status](https://coveralls.io/repos/processone/pkix/badge.svg?branch=master&service=github)](https://coveralls.io/github/processone/pkix?branch=master)
+[![Hex version](https://img.shields.io/hexpm/v/pkix.svg "Hex version")](https://hex.pm/packages/pkix)
+
 The idea of the library is to simplify certificates configuration in Erlang programs.
 Typically an Erlang program which needs certificates (for HTTPS/MQTT/XMPP/etc)
 provides a bunch of options such as `certfile`, `chainfile`, `privkey`, etc.
