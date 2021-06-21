@@ -115,10 +115,6 @@ Rules = [
 	  Rebar3DepsFilter, []},
 	 {[plugins], IsRebar3,
 	  AppendList([rebar3_hex, pc]), []},
-	 {[deps], os:getenv("TEST") == "true",
-	  AppendList([{meck, ".*", {git, "https://github.com/eproxus/meck", {tag, "0.8.7"}}},
-	              {proper, ".*", {git, "https://github.com/manopapad/proper", {tag, "v1.3"}}}
-	             ]), []},
 	 {[plugins], os:getenv("COVERALLS") == "true",
 	  AppendList([{coveralls, {git,
 	                           "https://github.com/RoadRunnr/coveralls-erl.git",
