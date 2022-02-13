@@ -1,3 +1,7 @@
+# Version 1.0.9
+
+* Update CA bundle
+
 # Version 1.0.8
 
 * Switch from using Travis to Github Actions as CI
@@ -13,6 +17,5 @@
 # Version 1.0.4
 
 * Fix unicode formating
-* Updated CA bundle
+* Update CA bundle
 * Avoid duplicates in extract\_domain
-
