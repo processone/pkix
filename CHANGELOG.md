@@ -1,5 +1,6 @@
 # Version 1.0.9
 
+* Generate documentaion for hex.pm packages
 * Update CA bundle
 
 # Version 1.0.8
