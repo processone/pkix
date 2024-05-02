@@ -244,7 +244,9 @@ format_error({invalid_cert, Line, Unknown}) ->
     at_line(Line, io_lib:format("~w", [Unknown]));
 format_error(Posix) when is_atom(Posix) ->
     case file:format_error(Posix) of
-	"unknown POSIX error" ->
+	"unknown POSIX error" -> % Erlang/OTP 25 and older
+	    atom_to_list(Posix);
+	[$u, $n, $k, $n, $o, $w, $n | _] -> % Erlang/OTP 26 and newer
 	    atom_to_list(Posix);
 	Reason ->
 	    Reason
