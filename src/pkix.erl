@@ -28,7 +28,7 @@
 -export([get_cert_info/1]).
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-	 terminate/2, code_change/3, format_status/2]).
+	 terminate/2, code_change/3]).
 %% For tests only
 -export([get_expiration_date/1, current_datetime/0, extract_domains/1]).
 
@@ -327,10 +327,6 @@ terminate(_Reason, State) ->
 -spec code_change(term() | {down, term()}, state(), term()) -> {ok, state()}.
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
-
--spec format_status(normal | terminate, list()) -> term().
-format_status(_Opt, Status) ->
-    Status.
 
 %%%===================================================================
 %%% Certificate file loading/unloading
