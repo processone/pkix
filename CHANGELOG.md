@@ -1,3 +1,7 @@
+# Version 1.0.10
+
+* Fix issues with building on OTP27
+
 # Version 1.0.9
 
 * Generate documentaion for hex.pm packages
@@ -13,7 +17,7 @@
 
 # Version 1.0.5
 
-* Update release year 
+* Update release year
 
 # Version 1.0.4
 
